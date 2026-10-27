@@ -1,0 +1,315 @@
+/* carts/volley/main.ajs — PUFF VOLLEY(AC1 移植 · 模式1)
+ * 球场/球网走 BG(静态);双圆球兽与排球走 OAM 精灵(跳姿换 tile)。
+ * 无攻击键自动出拳/AI 预测/15 分制照搬 AC1。240×176:GY=156。
+ */
+var D = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+var P = D.P, T = D.T, P1 = D.P1, P1J = D.P1J, P2 = D.P2, P2J = D.P2J, BALL = D.BALL, DOT = D.DOT;
+
+var W = 240, H = 176;
+var GY = 156, NET_X = 120, NET_TOP = 118, NET_W = 3;
+var GRAV = 0.22, BALL_R = 7, PR = 11, WIN_PT = 15;
+var DIFFS = [
+  { n: 'EASY', v: 1.55, react: 20, jit: 32, jump: 0.35 },
+  { n: 'NORMAL', v: 2.3, react: 12, jit: 16, jump: 0.62 },
+  { n: 'HARD', v: 3.05, react: 6, jit: 7, jump: 0.86 }
+];
+var scene, diffSel, p1, p2, ball, score1, score2, serveTo, rally;
+var freezeT, bannerT, bannerTxt, bannerCi, clouds, parts, t = 0, frameInScene = 0, paused;
+var bestRally = 0, lastPt = 1, shakeT = 0;
+
+function mkPlayer(x, ci) { return { x: x, y: GY, vx: 0, vy: 0, face: x < 120 ? 1 : -1, ci: ci }; }
+function newMatch() {
+  p1 = mkPlayer(60, P.MINT);
+  p2 = mkPlayer(180, P.CORAL);
+  score1 = 0; score2 = 0; serveTo = 1; rally = 0;
+  parts = [];
+  setupServe(1);
+}
+function setupServe(to) {
+  serveTo = to;
+  var s = to === 1 ? p1 : p2;
+  ball = { x: s.x + (to === 1 ? 14 : -14), y: s.y - 46, vx: 0, vy: 0, live: false, trail: [], rot: 0 };
+  scene = 'serve';
+  freezeT = 45;
+  bannerTxt = to === 1 ? 'YOUR SERVE' : 'RIVAL SERVE';
+  bannerT = 45; bannerCi = to === 1 ? P.GREEN : P.ORANGE;
+}
+function burst(x, y, ci, n, sp) {
+  for (var i = 0; i < n; i++) {
+    var a = rng() * 6.2832, s = (sp || 1.6) * (0.4 + rng() * 0.6);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 0.8, ci: ci, life: 12 + rng() * 16 | 0 });
+  }
+}
+function punch(p) {
+  if (scene === 'serve') { scene = 'play'; ball.live = true; }
+  var dir = ball.x >= p.x ? 1 : -1;
+  ball.vx = dir * (3.8 + Math.abs(p.vx) * 0.5);
+  if (ball.vx > 7) ball.vx = 7;
+  if (ball.vx < -7) ball.vx = -7;
+  ball.vy = -(3.0 + Math.abs(ball.vy) * 0.25);
+  if (ball.vy < -8.8) ball.vy = -8.8;
+  if (ball.vy > -1.5) ball.vy = -1.5;
+  ball.vx += (rng() - 0.5) * 0.5;
+  p.face = dir;
+  rally++;
+  burst(ball.x, ball.y, P.WHITE, 5, 1.2);
+  shakeT = 4;
+  A.playSfx(1);
+}
+function tryPunch(p) {
+  var dx = Math.abs(ball.x - p.x), dy = Math.abs(ball.y - (p.y - PR));
+  if (dx < PR + BALL_R + 2 && dy < PR + BALL_R + 4) punch(p);
+  else p.punchOk = true;
+}
+function stepBall() {
+  ball.vy += GRAV;
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+  ball.rot += ball.vx * 0.06;
+  if (ball.x < 3 + BALL_R) { ball.x = 3 + BALL_R; ball.vx = Math.abs(ball.vx) * 0.92; }
+  if (ball.x > W - 3 - BALL_R) { ball.x = W - 3 - BALL_R; ball.vx = -Math.abs(ball.vx) * 0.92; }
+  if (ball.y + BALL_R > NET_TOP) {
+    if (ball.x < NET_X && ball.x + BALL_R > NET_X - NET_W) { ball.x = NET_X - NET_W - BALL_R; ball.vx = -Math.abs(ball.vx) * 0.6; }
+    else if (ball.x > NET_X && ball.x - BALL_R < NET_X + NET_W) { ball.x = NET_X + NET_W + BALL_R; ball.vx = Math.abs(ball.vx) * 0.6; }
+  }
+  if (Math.abs(ball.x - NET_X) < BALL_R + NET_W && ball.y + BALL_R > NET_TOP - 2 &&
+      ball.y + BALL_R < NET_TOP + 4 && ball.vy > 0) {
+    ball.vy = -ball.vy * 0.45;
+    if (Math.abs(ball.vx) < 0.4) ball.vx += rng() < 0.5 ? -0.6 : 0.6;
+  }
+  ball.trail.push([ball.x, ball.y]);
+  if (ball.trail.length > 6) ball.trail.shift();
+  tryPunch(p1); tryPunch(p2);
+  if (ball.y + BALL_R >= GY) {
+    ball.y = GY - BALL_R;
+    var scorer = ball.x < NET_X ? 2 : 1;
+    burst(ball.x, GY, P.SANDD, 12, 2);
+    pointTo(scorer);
+  }
+}
+function pointTo(who) {
+  if (who === 1) score1++; else score2++;
+  lastPt = who;
+  if (rally > bestRally) bestRally = rally;
+  scene = 'point';
+  freezeT = 60;
+  if (score1 >= WIN_PT || score2 >= WIN_PT) {
+    bannerTxt = score1 > score2 ? 'YOU WIN!' : 'YOU LOSE...';
+    bannerCi = score1 > score2 ? P.YELLOW : P.RED;
+    if (score1 > score2) writeSave();
+    A.playSfx(5);
+  } else {
+    bannerTxt = who === 1 ? 'POINT YOU!' : 'POINT RIVAL';
+    bannerCi = who === 1 ? P.GREEN : P.ORANGE;
+  }
+  bannerT = 90;
+}
+function stepPlayer(p, input, minX, maxX) {
+  var onG = p.y >= GY - 0.5;
+  if (input.left) { p.vx -= onG ? 0.35 : 0.16; p.face = -1; }
+  if (input.right) { p.vx += onG ? 0.35 : 0.16; p.face = 1; }
+  if (!input.left && !input.right && onG) p.vx *= 0.8;
+  if (input.jump && onG) { p.vy = -6.3; A.playSfx(1); }
+  p.vx = Math.max(-2.9, Math.min(2.9, p.vx));
+  p.vy += GRAV;
+  p.x = Math.max(minX, Math.min(maxX, p.x + p.vx));
+  p.y += p.vy;
+  if (p.y > GY) {
+    if (p.vy > 3.5) burst(p.x, GY, P.SANDD, 5, 1);
+    p.y = GY; p.vy = 0;
+  }
+}
+var aiTarget = 184, aiClock = 0;
+function stepAI() {
+  var Df = DIFFS[diffSel];
+  aiClock++;
+  var onMySide = ball.x > NET_X - 6 || ball.vx > 0.3;
+  if (aiClock % Df.react === 0) {
+    if (onMySide && ball.live !== false) {
+      var sx = ball.x, sy = ball.y, svx = ball.vx, svy = ball.vy;
+      for (var i = 0; i < 240; i++) {
+        svy += GRAV; sx += svx; sy += svy;
+        if (sx < 3 + BALL_R) { sx = 3 + BALL_R; svx = -svx; }
+        if (sx > W - 3 - BALL_R) { sx = W - 3 - BALL_R; svx = -svx; }
+        if (sy + BALL_R >= GY) break;
+      }
+      aiTarget = Math.max(130, Math.min(230, sx + (rng() - 0.5) * Df.jit));
+    } else aiTarget = 184 + (rng() - 0.5) * 10;
+  }
+  var dx = aiTarget - p2.x;
+  var input = { left: dx < -2, right: dx > 2, jump: false };
+  if (ball.live !== false && ball.vy > 0.5 && Math.abs(ball.x - p2.x) < 26 &&
+      ball.y < p2.y - 30 && p2.y >= GY - 0.5 && rng() < Df.jump * 0.12) input.jump = true;
+  if (scene === 'serve' && serveTo === 2) {
+    input.left = ball.x < p2.x - 2 && ball.x > 132;
+    input.right = ball.x > p2.x + 2;
+    if (Math.abs(ball.x - p2.x) < 4 && p2.y >= GY - 0.5 && rng() < 0.3) input.jump = true;
+  }
+  stepPlayer(p2, input, 130, 230);
+}
+function doUpdate() {
+  t++;
+  frameInScene++;
+  if (bannerT > 0) bannerT--;
+  if (shakeT > 0) shakeT--;
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.07;
+    if (--p.life <= 0) parts.splice(i, 1);
+  }
+  if (scene === 'title') {
+    if (pad.left.pressed) diffSel = (diffSel + 2) % 3;
+    if (pad.right.pressed) diffSel = (diffSel + 1) % 3;
+    if (pad.a.pressed || pad.start.pressed) { newMatch(); A.playSfx(0); }
+    return;
+  }
+  if (paused) { if (pad.start.pressed) paused = false; return; }
+  if (pad.start.pressed && (scene === 'play' || scene === 'serve')) { paused = true; return; }
+  var inp1 = { left: pad.left.down, right: pad.right.down, jump: pad.up.down };
+  if (scene === 'serve') {
+    stepPlayer(p1, inp1, 8, 108);
+    stepAI();
+    var s = serveTo === 1 ? p1 : p2;
+    if (freezeT > 18) {
+      ball.x += (s.x + (serveTo === 1 ? 14 : -14) - ball.x) * 0.2;
+      ball.y += (s.y - 46 - ball.y) * 0.1;
+      ball.vy = 0; ball.vx = 0;
+    } else {
+      ball.vy += GRAV;
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+      tryPunch(p1); tryPunch(p2);
+      if (ball.y + BALL_R >= GY) pointTo(serveTo === 1 ? 2 : 1);
+    }
+    if (--freezeT < -300) { scene = 'play'; ball.live = true; }
+    return;
+  }
+  if (scene === 'play') {
+    stepPlayer(p1, inp1, 8, 108);
+    stepAI();
+    stepBall();
+    return;
+  }
+  if (scene === 'point') {
+    stepPlayer(p1, { left: false, right: false, jump: false }, 8, 108);
+    if (--freezeT <= 0) {
+      if (score1 >= WIN_PT || score2 >= WIN_PT) { scene = 'over'; bannerT = 0; }
+      else setupServe(lastPt);
+    }
+    return;
+  }
+  if (scene === 'over') {
+    if (pad.a.pressed || pad.start.pressed) newMatch();
+    if (pad.b.pressed) scene = 'title';
+  }
+}
+/* —— 绘制 —— */
+function draw() {
+  var i = 0;
+  // 阴影不画(mode1 无任意矩形),直接双兽 + 球
+  var drawP = function (p, base, jumpT) {
+    S.setSprite(i++, { x: (p.x - 8) | 0, y: (p.y - 22 - (p.y < GY - 1 ? 2 : 0)) | 0, tile: (p.y < GY - 1 ? jumpT : base), prio: 2, fh: p.face < 0 ? 1 : 0 });
+  };
+  if (scene !== 'title') {
+    drawP(p2, P2, P2J);
+    drawP(p1, P1, P1J);
+    if (!(scene === 'point' && freezeT < 40)) {
+      for (var ti = ball.trail.length - 2; ti >= 0 && i < 126; ti -= 2)
+        S.setSprite(i++, { x: (ball.trail[ti][0] - 4) | 0, y: (ball.trail[ti][1] - 4) | 0, tile: DOT, prio: 1 });
+      S.setSprite(i++, { x: (ball.x - 4) | 0, y: (ball.y - 4) | 0, tile: BALL + (((t >> 2) % 3) | 0), prio: 3 });
+    }
+  }
+  for (var pi = 0; pi < parts.length && i < 128; pi++)
+    S.setSprite(i++, { x: (parts[pi].x - 4) | 0, y: parts[pi].y | 0, tile: DOT, prio: 3 });
+  if (shakeT > 0) S.scroll(0, (t & 1) * 2 - 1, 0); else S.scroll(0, 0, 0);
+  // 文本
+  if (scene === 'title') {
+    bios.text(84, 20, 'PUFF', { color: P.YELLOW, scale: 2 });
+    bios.text(72, 40, 'VOLLEY', { color: P.GREEN, scale: 2 });
+    bios.text(78, 64, DIFFS[diffSel].n + '  <  >', { color: P.CYAN });
+    var rec = readRec();
+    if (rec.w) bios.text(96, 76, 'WINS ' + rec.w, { color: P.LGRAY });
+    if ((t % 60) < 38) bios.text(66, 94, 'PRESS Z OR START', { color: P.WHITE });
+    bios.text(60, 116, 'FIRST TO 15 POINTS', { color: P.LGRAY });
+    bios.text(48, 128, 'ARROWS MOVE - UP JUMP', { color: P.SLATE });
+    bios.text(36, 140, 'BODY HITS BALL AUTOMATICALLY', { color: P.SLATE });
+  } else {
+    var s = score1 + ' - ' + score2;
+    bios.text((W - s.length * 24) / 2 | 0, 2, s, { color: P.WHITE, scale: 2 });
+    bios.text(4, 4, DIFFS[diffSel].n, { color: P.CYAN });
+    if (rally >= 3) bios.text(204, 4, 'R' + rally, { color: rally >= 8 ? P.YELLOW : P.LGRAY });
+    if (bannerT > 0 && (bannerT >= 15 || (t & 3) < 2)) {
+      bios.text((W - bannerTxt.length * 24) / 2 | 0, 66, bannerTxt, { color: bannerCi, scale: 2 });
+      if (scene === 'serve') bios.text(66, 90, serveTo === 1 ? 'JUMP AND HIT IT' : 'GET READY!', { color: P.LGRAY });
+    }
+    if (scene === 'over') {
+      var win = score1 > score2;
+      bios.text(60, 52, win ? 'YOU WIN!' : 'YOU LOSE...', { color: win ? P.YELLOW : P.RED, scale: 2 });
+      var f = score1 + ' - ' + score2;
+      bios.text((W - f.length * 24) / 2 | 0, 82, f, { color: P.WHITE, scale: 2 });
+      bios.text(72, 106, 'BEST RALLY ' + bestRally, { color: P.LGRAY });
+      if ((t % 60) < 38) bios.text(72, 122, 'Z:REMATCH X:TITLE', { color: P.GREEN });
+    }
+    if (paused) bios.text(90, 84, 'PAUSED', { color: P.WHITE, scale: 2 });
+  }
+}
+function writeSave() {
+  try {
+    var r = readRec();
+    r.w++;
+    save(new Uint8Array([r.w & 255, r.w >> 8]));
+  } catch (e) { }
+}
+function readRec() {
+  var d = load();
+  return d && d.length >= 2 ? { w: d[0] | (d[1] << 8) } : { w: 0 };
+}
+function buildCourt() {
+  // BG:天空三段 + 海 + 沙地 + 球网(静态一屏)
+  S.mapSize(0, 30, 22);
+  var e = new Uint16Array(30 * 22);
+  for (var y = 0; y < 22; y++) for (var x = 0; x < 30; x++) {
+    var ti = T.SKY1;
+    if (y >= 2 && y < 8) ti = T.SKY1;
+    else if (y >= 8 && y < 10) ti = T.SKY2;
+    else if (y >= 10 && y < 14) ti = T.SKY3;
+    else if (y === 14) ti = T.SEA;
+    else if (y >= 15) ti = T.SAND;
+    e[y * 30 + x] = S.entry(ti);
+  }
+  // 太阳
+  e[3 * 30 + 3] = S.entry(T.SUN);
+  e[3 * 30 + 4] = S.entry(T.SUN);
+  e[4 * 30 + 3] = S.entry(T.SUN);
+  e[4 * 30 + 4] = S.entry(T.SUN);
+  // 云
+  for (var c = 0; c < 4; c++) {
+    var cx = 3 + c * 7, cy = 2 + (c % 2);
+    e[cy * 30 + cx] = S.entry(T.CLOUD);
+    e[cy * 30 + cx + 1] = S.entry(T.CLOUD);
+  }
+  // 网柱(x=15 列,自 NET_TOP=118 → 行 14..19)
+  for (var ny = 14; ny <= 19; ny++) {
+    e[ny * 30 + 15] = S.entry(T.NETP);
+    // 网面横线
+    if (ny % 1 === 0) { e[ny * 30 + 14] = S.entry(T.NETM); e[ny * 30 + 16] = S.entry(T.NETM); }
+  }
+  S.setMap(0, 0, 0, 30, 22, e);
+  S.scroll(0, 0, 0);
+}
+function init() {
+  S.loadTiles('bg', cart.seg('tilesbg', 0).data, 0);
+  S.loadTiles('obj', cart.seg('tilesobj', 0).data, 0);
+  S.backdrop(P.INK);
+  buildCourt();
+  scene = 'title';
+  diffSel = 1;
+  p1 = mkPlayer(60, P.MINT);
+  p2 = mkPlayer(180, P.CORAL);
+  ball = { x: 120, y: 80, vx: 0, vy: 0, live: false, trail: [], rot: 0 };
+  score1 = 0; score2 = 0; rally = 0; serveTo = 1;
+  freezeT = 0; bannerT = 0; paused = false;
+  parts = [];
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

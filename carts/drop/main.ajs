@@ -1,0 +1,299 @@
+/* carts/drop/main.ajs — DEEP DROP(AC1 移植 · 模式1)
+ * 洞壁/平台/火把全部写入 BG 地图(64 行循环换行);玩家/粒子走 OAM;
+ * BG1 固定不卷,画顶部尖刺死亡线。物理/平台类型/PERFECT 照搬 AC1。
+ */
+var D = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+var P = D.P, T = D.T, HERO = D.HERO, HERO_JUMP = D.HERO_JUMP, DOT1 = D.DOT1, DOT2 = D.DOT2, GDOT = D.GDOT;
+
+var W = 240, H = 176, GRAV = 0.24, TERM = 3.6, TERM_FAST = 4.8, TAU = 6.2832;
+var MW = 30, MH = 64;              // 地图 30×64 tile(世界高 512px,循环)
+var scene, paused, frameC, freeze, flashT;
+var px, py, vx, vy, grounded, dropT, sy, perfectCt, perfectCombo;
+var plats, parts, pops, camY, lastGenY, nextId, floors, bestY, platId;
+var bannerT, bannerA, deathT, overT, best, dust, t = 0, shakeT = 0;
+
+function burst(x, y, n, ci, sp, life) {
+  for (var i = 0; i < n; i++) {
+    var a = rng() * TAU, s = sp * (0.25 + rng() * 0.75), m = (life * 0.6 + rng() * life * 0.4) | 0;
+    parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s * 0.8, ci: ci, life: m });
+  }
+}
+function pop(txt, x, y, ci) { pops.push({ t: txt, x: x, y: y, ci: ci, life: 40 }); }
+
+function genRow() {
+  var y = lastGenY + (26 + rng() * 12 | 0);
+  lastGenY = y;
+  var d = floors;
+  var wMax = Math.max(38, 74 - d * 0.4), wMin = Math.max(30, wMax - 26);
+  var roll = rng(), type = 'N';
+  if (d > 2) {
+    if (roll < 0.16) type = 'M';
+    else if (roll < 0.3) type = 'C';
+    else if (roll < 0.42) type = 'S';
+    else if (roll < 0.5) type = 'B';
+  }
+  var w = (wMin + rng() * (wMax - wMin)) | 0;
+  plats.push({ id: nextId++, x: (16 + rng() * (W - 32 - w)) | 0, y: y, w: w, type: type, vx: type === 'M' ? (0.45 + rng() * 0.4) * (rng() < 0.5 ? 1 : -1) : 0, crumbleT: -1, broken: false });
+  if (d > 6 && rng() < 0.3 && type !== 'M') {
+    var w2 = (30 + rng() * Math.max(1, wMax - 40)) | 0;
+    var x2 = (16 + rng() * Math.max(1, W - 32 - w2)) | 0;
+    plats.push({ id: nextId++, x: x2, y: y, w: w2, type: rng() < 0.3 ? 'S' : 'N', vx: 0, crumbleT: -1, broken: false });
+  }
+}
+function ensureGen() {
+  while (lastGenY < camY + H + 60) genRow();
+  while (plats.length && plats[0].y < camY - 80) plats.shift();
+}
+function resetRun() {
+  scene = 'play'; paused = false;
+  px = W / 2; py = 60; vx = 0; vy = 0;
+  grounded = false; dropT = 0; sy = 1;
+  plats = []; parts = []; pops = []; dust = [];
+  camY = 0; lastGenY = 14; nextId = 1; floors = 0; bestY = 0; platId = 0;
+  perfectCt = 0; perfectCombo = 0;
+  plats.push({ id: nextId++, x: W / 2 - 30, y: 76, w: 60, type: 'N', vx: 0, crumbleT: -1, broken: false });
+  lastGenY = 76;
+  ensureGen();
+  bannerT = 100; bannerA = 'DROP!';
+  freeze = 0; flashT = 0; deathT = 0; overT = 0;
+  clearMapDynamic();
+}
+function doDeath(why) {
+  scene = 'dying';
+  deathT = 0; freeze = 9; flashT = 6; shakeT = 12;
+  burst(px, py, 26, why === 'spike' ? P.RED : P.WHITE, 3);
+  burst(px, py, 14, P.ORANGE, 2.2);
+  A.playSfx(3);
+  writeSave();
+}
+function landOn(p, impact) {
+  if (p.type === 'S') { doDeath('spike'); return; }
+  grounded = true;
+  platId = p.id;
+  py = p.y; vy = 0;
+  sy = Math.max(0.55, Math.min(0.9, 1 - impact * 0.06));
+  burst(px, py, 3 + (impact * 1.6 | 0), P.LGRAY, 1 + impact * 0.2);
+  if (impact > 3.2) shakeT = 6;
+  if (p.type === 'C' && p.crumbleT < 0) p.crumbleT = 26;
+  if (p.y > bestY) {
+    bestY = p.y;
+    floors++;
+    var off = Math.abs(px - (p.x + p.w / 2));
+    if (off < p.w * 0.15) {
+      perfectCt++; perfectCombo++;
+      pop(perfectCombo > 1 ? 'PERFECT X' + perfectCombo : 'PERFECT', px - 28, p.y - camY - 14, P.CYAN);
+      shakeT = 5;
+    } else perfectCombo = 0;
+    if (floors % 10 === 0) {
+      pop(floors + ' FLOORS!', 84, 44, P.YELLOW);
+      if (floors === 100) { bannerT = 160; bannerA = 'REAL MAN!'; flashT = 4; }
+    }
+  }
+  if (p.type === 'B') {
+    vy = -5.7; grounded = false; sy = 1.5;
+    shakeT = 8;
+    burst(px, p.y, 10, P.YELLOW, 2);
+    pop('BOING!', px - 24, p.y - camY - 16, P.YELLOW);
+    A.playSfx(1);
+  } else A.playSfx(0);
+}
+function updatePlay() {
+  frameC++;
+  if (flashT > 0) flashT--;
+  if (bannerT > 0) bannerT--;
+  updateParts();
+  if (freeze > 0) { freeze--; return; }
+  var spd = Math.min(2.2, 0.45 + floors * 0.009);
+  camY += spd;
+  if (py - camY > 118) camY = py - 118;
+  ensureGen();
+  if (pad.left.down) vx -= 0.35;
+  if (pad.right.down) vx += 0.35;
+  if (!pad.left.down && !pad.right.down) vx *= 0.82;
+  vx = Math.max(-1.75, Math.min(1.75, vx));
+  if (grounded && (pad.a.pressed || pad.up.pressed)) {
+    vy = -3.1; grounded = false; sy = 1.3;
+    burst(px, py, 4, P.LGRAY, 1);
+    A.playSfx(1);
+  }
+  if (pad.down.down && grounded) { grounded = false; vy = Math.max(vy, 0.8); dropT = 9; }
+  var prevBottom = py;
+  vy += GRAV;
+  if (!grounded && pad.down.down) vy += 0.22;
+  vy = Math.min(vy, pad.down.down ? TERM_FAST : TERM);
+  py += vy;
+  if (dropT > 0) dropT--;
+  px = Math.max(14, Math.min(W - 14, px + vx));
+  var impact = vy;
+  grounded = false;
+  if (vy >= 0 && dropT <= 0) {
+    for (var i = 0; i < plats.length; i++) {
+      var p = plats[i];
+      if (p.broken) continue;
+      if (px + 3 > p.x && px - 3 < p.x + p.w && prevBottom <= p.y + 0.01 && py >= p.y) {
+        landOn(p, impact);
+        break;
+      }
+    }
+  }
+  if (scene !== 'play') return;
+  sy += (1 - sy) * 0.16;
+  for (var j = 0; j < plats.length; j++) {
+    var q = plats[j];
+    if (q.type === 'M' && !q.broken) {
+      q.x += q.vx;
+      if (q.x < 16) { q.x = 16; q.vx = Math.abs(q.vx); }
+      if (q.x + q.w > W - 16) { q.x = W - 16 - q.w; q.vx = -Math.abs(q.vx); }
+      if (grounded && platId === q.id) px = Math.max(14, Math.min(W - 14, px + q.vx));
+    }
+    if (q.type === 'C' && q.crumbleT > 0) {
+      q.crumbleT--;
+      if (q.crumbleT === 0) {
+        q.broken = true;
+        if (grounded && platId === q.id) { grounded = false; vy = 0.4; }
+        burst(q.x + q.w / 2, q.y, 10, P.LGRAY, 1.2);
+        shakeT = 5;
+        A.playSfx(3);
+      }
+    }
+  }
+  if (py - camY < 12) { doDeath('crush'); return; }
+  if (frameC % 5 === 0) dust.push({ x: 20 + rng() * (W - 40), y: H + 2, v: 0.6 + rng() * 0.8 });
+  if (parts.length > 40) parts.splice(0, parts.length - 40);
+}
+function updateParts() {
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1;
+    if (--p.life <= 0) parts.splice(i, 1);
+  }
+  for (var j = pops.length - 1; j >= 0; j--) { pops[j].y -= 0.4; if (--pops[j].life <= 0) pops.splice(j, 1); }
+  for (var k = dust.length - 1; k >= 0; k--) { dust[k].y -= dust[k].v; if (dust[k].y < -2) dust.splice(k, 1); }
+}
+function doUpdate() {
+  t++;
+  if (scene === 'title') { if (pad.a.pressed || pad.start.pressed) resetRun(); return; }
+  if (scene === 'dying') {
+    deathT++;
+    updateParts();
+    if (deathT > 55) { scene = 'over'; overT = 0; }
+    return;
+  }
+  if (scene === 'over') {
+    overT++;
+    updateParts();
+    if (overT > 30 && (pad.a.pressed || pad.start.pressed)) scene = 'title';
+    return;
+  }
+  if (pad.start.pressed) paused = !paused;
+  if (paused) return;
+  updatePlay();
+}
+/* —— BG:每帧把可见平台行写进地图 —— */
+function platTiles(p) {
+  var n = Math.max(2, Math.round(p.w / 8));
+  var arr = [];
+  for (var i = 0; i < n; i++) {
+    if (p.type === 'S') arr.push(i === 0 ? T.ROCK_L : (i === n - 1 ? T.ROCK_R : T.ROCK_M));
+    else if (p.type === 'M') arr.push(i === 0 ? T.ICE_L : (i === n - 1 ? T.ICE_R : T.ICE_M));
+    else if (p.type === 'C') arr.push(i === 0 ? T.CRUMB_L : (i === n - 1 ? T.CRUMB_R : T.CRUMB_M));
+    else if (p.type === 'B') arr.push(T.SPRING);
+    else arr.push(i === 0 ? T.ROCK_L : (i === n - 1 ? T.ROCK_R : T.ROCK_M));
+  }
+  return arr;
+}
+function clearMapDynamic() {
+  // 全图填洞壁 + 火把;每次 reset 重建
+  var e = new Uint16Array(MW * MH);
+  for (var y = 0; y < MH; y++) {
+    for (var x = 0; x < MW; x++) {
+      var ti = 0;
+      if (x < 2 || x >= 28) ti = T.WALL;
+      e[y * MW + x] = ti ? S.entry(ti) : 0;
+    }
+  }
+  S.setMap(0, 0, 0, MW, MH, e);
+}
+function draw() {
+  // 世界坐标 → 地图行(地图随 camY 平移,用 scroll 的整数余数 + 行搬运)
+  var scrollY = Math.floor(camY) % (MH * 8);
+  for (var old = lastRows.length - 1; old >= 0; old--) {
+    var rr = lastRows[old];
+    for (var x = 2; x < 28; x++) S.setTile(0, x, rr, 0);
+  }
+  lastRows.length = 0;
+  for (var i = 0; i < plats.length; i++) {
+    var p = plats[i];
+    if (p.broken) continue;
+    if (p.y < camY - 16 || p.y > camY + H + 16) continue;
+    var row = Math.floor(p.y / 8) % MH;
+    var tiles = platTiles(p);
+    var tx0 = Math.max(2, Math.round(p.x / 8));
+    for (var k = 0; k < tiles.length; k++) S.setTile(0, Math.min(27, tx0 + k), row, S.entry(tiles[k]));
+    lastRows.push(row);
+  }
+  S.scroll(0, 0, scrollY);
+  if (shakeT > 0) { S.scroll(0, ((t & 1) * 2 - 1), scrollY + ((t & 1) * 2 - 1)); shakeT--; }
+  // 精灵
+  var si = 0;
+  if (scene !== 'title' && !(scene === 'dying' && deathT <= 12))
+    S.setSprite(si++, { x: (px - 8) | 0, y: (py - 15) | 0, tile: vy < -0.5 ? HERO_JUMP : HERO, prio: 3 });
+  for (var pi = 0; pi < parts.length && si < 127; pi++)
+    S.setSprite(si++, { x: (parts[pi].x - 4) | 0, y: (parts[pi].y - camY - 4) | 0, tile: DOT1, prio: 2 });
+  // 文本
+  if (scene === 'title') {
+    bios.text(48, 14, 'DEEP DROP', { color: P.CYAN, scale: 2 });
+    bios.text(60, 40, 'FALL 100 FLOORS', { color: P.YELLOW });
+    if (best > 0) bios.text(66, 54, 'BEST ' + best + ' FLOORS', { color: P.GOLD });
+    if ((t % 60) < 38) bios.text(66, 92, 'PRESS START', { color: P.WHITE });
+    bios.text(42, 114, 'LEFT RIGHT - MOVE', { color: P.LGRAY });
+    bios.text(36, 126, 'Z - JUMP  DOWN - DROP', { color: P.LGRAY });
+    bios.text(24, 140, 'DO NOT TOUCH CEILING', { color: P.SLATE });
+  } else {
+    var fTxt = String(floors);
+    bios.text((W - fTxt.length * 12) / 2 | 0, 14, fTxt, { color: P.WHITE, scale: 2 });
+    bios.text(96, 32, 'FLOOR', { color: P.LGRAY });
+    bios.text(4, 14, 'BEST ' + Math.max(best, floors), { color: P.GOLD });
+    if (flashT > 0 || (py - camY - 12 < 40 && (t % 10) < 5)) bios.text(0, 10, '                              ', { color: P.RED });
+    for (var pj2 = 0; pj2 < pops.length; pj2++)
+      bios.text(pops[pj2].x | 0, pops[pj2].y | 0, pops[pj2].t, { color: pops[pj2].ci });
+    if (bannerT > 0 && (bannerT > 16 || (t & 3) < 2))
+      bios.text((W - bannerA.length * 24) / 2 | 0, 60, bannerA, { color: P.WHITE, scale: 2 });
+    if (scene === 'over') {
+      bios.text(60, 56, floors >= 100 ? 'REAL MAN!' : 'GAME OVER', { color: floors >= 100 ? P.GOLD : P.RED, scale: 2 });
+      bios.text(66, 84, floors + ' FLOORS DOWN', { color: P.WHITE });
+      bios.text(72, 98, 'PERFECT ' + perfectCt, { color: P.CYAN });
+      bios.text(66, 112, 'BEST ' + best + ' FLOORS', { color: P.YELLOW });
+      if (overT > 30 && (t % 60) < 38) bios.text(66, 130, 'PRESS START', { color: P.WHITE });
+    }
+    if (paused) bios.text(90, 84, 'PAUSED', { color: P.WHITE, scale: 2 });
+  }
+}
+var lastRows = [];
+function writeSave() {
+  if (floors > best) { best = floors; try { save(new Uint8Array([best & 255, best >> 8])); } catch (e) { } }
+}
+function init() {
+  S.loadTiles('bg', cart.seg('tilesbg', 0).data, 0);
+  S.loadTiles('obj', cart.seg('tilesobj', 0).data, 0);
+  // BG1:顶部尖刺条(不卷动)
+  var d = load();
+  best = d && d.length >= 2 ? d[0] | (d[1] << 8) : 0;
+  scene = 'title'; paused = false;
+  frameC = 0; freeze = 0; flashT = 0;
+  px = W / 2; py = 60; vx = 0; vy = 0;
+  grounded = false; dropT = 0; sy = 1;
+  plats = []; parts = []; pops = []; dust = [];
+  camY = 0; lastGenY = 0; nextId = 1; floors = 0; bestY = 0; platId = 0;
+  bannerT = 0; deathT = 0; overT = 0;
+  clearMapDynamic();
+  // BG1 尖刺行
+  S.mapSize(1, 30, 22);
+  var e1 = new Uint16Array(30 * 22);
+  for (var x = 0; x < 30; x++) e1[x] = S.entry(T.SPIKE_ROW);
+  S.setMap(1, 0, 0, 30, 22, e1);
+  S.scroll(1, 0, 0);
+  S.backdrop(P.BG);
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

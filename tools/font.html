@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · 字体编辑器</title>
+<link rel="stylesheet" href="tools.css">
+<style>
+  canvas.pixel { image-rendering: pixelated; }
+  #glyph { cursor: crosshair; outline: 1px solid #333; }
+  #glyphList { display: flex; flex-wrap: wrap; gap: 3px; max-height: 180px; overflow: auto; }
+  #glyphList button { padding: 2px 6px; font-size: 12px; }
+  .layout { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start; }
+  .legend span { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>字体编辑器</h1>
+  <span class="crumb">14×14 = 12×12 主区 + 左 2 入侵 + 下 2 尾部(T1);AFNT v2</span>
+  <span class="spacer"></span>
+  <a href="index.html">← 工具首页</a>
+</header>
+<main>
+  <div class="layout">
+    <section>
+      <h2>编辑网格 <span id="cpLabel" class="muted"></span></h2>
+      <canvas id="glyph" class="pixel"></canvas>
+      <div class="legend" style="margin-top:6px;font-size:12px">
+        <span style="background:#3a2a3a"></span>左 2px 入侵区(压入前字符)
+        <span style="background:#2a3a3a"></span>下 2px 尾部区(下伸部)
+        <span style="background:#2a2a34"></span>12×12 主区(步进 12px)
+      </div>
+      <div class="toolbar" style="margin-top:8px">
+        <button id="shiftL">← 挪</button><button id="shiftR">→ 挪</button>
+        <button id="shiftU">↑ 挪</button><button id="shiftD">↓ 挪</button>
+        <button id="clearGlyph">清空字形</button>
+        <span class="muted">左键画 / 右键擦</span>
+      </div>
+    </section>
+    <section class="col">
+      <section>
+        <h2>字形列表(内置 ASCII 32–126,可加码点)</h2>
+        <div id="glyphList"></div>
+        <div class="row" style="margin-top:8px">
+          <label>码点(hex)<input type="text" id="newCp" value="4E2D" size="6"></label>
+          <button id="addCp">添加(如中文)</button>
+          <button id="delCp">删除(仅自定义)</button>
+          <button id="resetBios">恢复内置字体</button>
+        </div>
+      </section>
+      <section>
+        <h2>上下文预览(相邻字符,看入侵/尾部溢出)</h2>
+        <canvas id="preview" class="pixel"></canvas>
+      </section>
+      <section>
+        <h2>试排</h2>
+        <div class="row"><input type="text" id="testInput" value="AVype 中0123 gjqy" size="40"></div>
+        <div style="margin-top:6px">行高 14:<br><canvas id="testStr" class="pixel"></canvas></div>
+        <div style="margin-top:6px">紧凑 12(下溢压行,游戏自担):<br><canvas id="testTight" class="pixel"></canvas></div>
+      </section>
+      <section>
+        <h2>导入 / 导出</h2>
+        <div class="row">
+          <button id="exportAfnt" class="primary">导出 font.afnt</button>
+          <button id="importAfnt">导入 .afnt</button>
+          <input type="file" id="afntFile" accept=".afnt" style="display:none">
+        </div>
+        <div class="muted" style="margin-top:6px">卡带 font 段即 .afnt:游戏内生效,BIOS 菜单恒用内置字体(§7.4)。</div>
+      </section>
+    </section>
+  </div>
+</main>
+<script src="../js/core/ansi.js"></script>
+<script src="../js/core/font.js"></script>
+<script src="../js/core/biosfont.js"></script>
+<script src="../js/tools/fontedit.js"></script>
+</body>
+</html>

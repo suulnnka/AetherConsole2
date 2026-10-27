@@ -1,0 +1,338 @@
+/* carts/runner/main.ajs — PIXEL DASH(AC1 移植 · 模式1)
+ * 地面/障碍/浮台全在 BG0(世界横向卷动,循环地图);BG1 视差天空(慢速滚动);
+ * 跑者/金币/粒子走 OAM。二段跳/滑铲/擦险照搬 AC1。
+ */
+var D = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+var P = D.P, T = D.T, RUN0 = D.RUN0, RUN1 = D.RUN1, SLIDE = D.SLIDE, COIN = D.COIN, DOT = D.DOT;
+
+var W = 240, H = 176;
+var GY = 148;                       // 地面顶(AC1 150 → 176 屏)
+var GRAV = 0.24, JUMP_V = -3.9, DJUMP_V = -3.45;
+var MW = 120, MH = 22;              // 世界地图 120×22 tile(960px 循环)
+
+var scene, paused, freeze, flashT;
+var wx, py, vy, v, jumps, coyote, jbuf, sliding, grounded, groundT, sy;
+var pits, obst, plats, coins, parts, pops;
+var genX, dist, nextMile, coinCt, combo, comboT, deathT, overT, best;
+var t = 0, shakeT = 0;
+
+function score() { return (dist + coinCt * 15) | 0; }
+function burst(x, y, n, ci, sp) {
+  for (var i = 0; i < n; i++) {
+    var a = rng() * 6.2832, s = sp * (0.25 + rng() * 0.75);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s * 0.8, ci: ci, life: 12 + rng() * 10 | 0 });
+  }
+}
+function pop(txt, x, y, ci) { pops.push({ t: txt, x: x, y: y, ci: ci, life: 36 }); }
+function camX() { return wx - 52; }
+function inPit(x) {
+  for (var i = 0; i < pits.length; i++) if (x > pits[i].x0 + 2 && x < pits[i].x1 - 2) return pits[i];
+  return null;
+}
+function genNext() {
+  var d = Math.max(0, Math.min(10, dist / 120));
+  var r = rng();
+  if (r < 0.2 && d > 0.5) {
+    var w = Math.max(26, Math.min(62, 26 + d * 4 + rng() * 8 | 0));
+    pits.push({ x0: genX, x1: genX + w });
+    var n = 3 + (rng() * 2 | 0);
+    for (var i = 0; i < n; i++)
+      coins.push({ x: genX + (w * i) / (n - 1), y: GY - 26 - Math.sin((i / (n - 1)) * Math.PI) * 22, tt: 0, taken: false });
+    genX += w;
+  } else if (r < 0.38) {
+    var w2 = 10 + rng() * (4 + d * 2) | 0;
+    obst.push({ kind: 'spike', x: genX, y: GY, w: w2, h: 7 });
+    genX += w2;
+  } else if (r < 0.55) {
+    var st = 1 + (rng() * (d > 3 ? 2 : 1) | 0);
+    obst.push({ kind: 'crate', x: genX, y: GY, w: 13, h: 13 * st });
+    genX += 13;
+  } else if (r < 0.68 && d > 1.5) {
+    obst.push({ kind: 'wall', x: genX, y: GY, w: 8, h: 28 + rng() * (2 + d * 2) | 0 });
+    genX += 8;
+  } else if (r < 0.82 && d > 1) {
+    var bw = 34 + rng() * 18 | 0;
+    obst.push({ kind: 'bar', x: genX, y0: GY - 26, y1: GY - 12, w: bw });
+    coins.push({ x: genX + 17, y: GY - 7, tt: 0, taken: false });
+    genX += bw;
+  } else if (r < 0.92) {
+    var len = 44 + rng() * 28 | 0, py2 = 104 + rng() * 24 | 0;
+    plats.push({ x: genX, y: py2, w: len });
+    for (var c = 0; c < 4; c++) coins.push({ x: genX + 8 + c * (len - 16) / 3, y: py2 - 16, tt: 0, taken: false });
+    genX += len + rng() * 20;
+  } else {
+    var n2 = 4 + (rng() * 3 | 0);
+    for (var q = 0; q < n2; q++) coins.push({ x: genX + q * 12, y: GY - 12 - (q % 2) * 5, tt: 0, taken: false });
+    genX += n2 * 12;
+  }
+  genX += Math.max(30, 46 + v * 9 - d * 2);
+}
+function ensureGen() {
+  while (genX < camX() + W + 140) genNext();
+  var cut = camX() - 60;
+  pits = pits.filter(function (p) { return p.x1 > cut; });
+  obst = obst.filter(function (o) { return o.x + o.w > cut; });
+  plats = plats.filter(function (p) { return p.x + p.w > cut; });
+  coins = coins.filter(function (c) { return c.x > cut && !c.taken; });
+}
+function resetRun() {
+  scene = 'play'; paused = false;
+  wx = 60; py = GY; vy = 0; v = 2.3; jumps = 0;
+  coyote = 0; jbuf = 0; sliding = false; grounded = true; groundT = 0; sy = 1;
+  pits = []; obst = []; plats = []; coins = []; parts = []; pops = [];
+  genX = 220;
+  dist = 0; nextMile = 400; coinCt = 0; combo = 0; comboT = 0;
+  freeze = 0; flashT = 0; deathT = 0; overT = 0;
+  buildWorldMap();
+}
+function doDeath() {
+  scene = 'dying'; deathT = 0; freeze = 10; flashT = 6; shakeT = 12;
+  burst(wx, py - 6, 30, P.ORANGE, 3.2);
+  burst(wx, py - 6, 10, P.RED, 2);
+  A.playSfx(3);
+}
+function land(wasGrounded, impact) {
+  grounded = true; jumps = 0; vy = 0; coyote = 0;
+  if (!wasGrounded) {
+    sy = Math.max(0.55, Math.min(0.92, 1 - impact * 0.075));
+    burst(wx, py, 4 + (impact * 2.4 | 0), P.LGRAY, 1.2 + impact * 0.25);
+    if (impact > 3.4) shakeT = 6;
+  }
+}
+function updatePlay() {
+  if (flashT > 0) flashT--;
+  if (comboT > 0 && --comboT <= 0) combo = 0;
+  updateParts();
+  if (freeze > 0) { freeze--; return; }
+  v = Math.min(4.8, v + 0.00035);
+  dist += v / 10;
+  if (dist >= nextMile) {
+    nextMile += 500;
+    v = Math.min(4.8, v + 0.12);
+    flashT = 2;
+    pop('SPEED UP!', 90, 56, P.CYAN);
+    burst(52, py - 14, 12, P.CYAN, 2.2);
+    A.playSfx(0);
+  }
+  var prevY = py;
+  wx += v;
+  ensureGen();
+  var down = pad.down.down;
+  if (grounded || coyote > 0) {
+    if (down && !sliding) { sliding = true; burst(wx, py, 6, P.LGRAY, 1.4); }
+    if (!down) sliding = false;
+  }
+  if (pad.a.pressed || pad.up.pressed) jbuf = 7;
+  if (jbuf > 0) jbuf--;
+  if (coyote > 0) coyote--;
+  if (jbuf > 0 && (grounded || coyote > 0 || jumps < 2)) {
+    var canGround = grounded || coyote > 0;
+    if (canGround) { vy = JUMP_V; jumps = 1; burst(wx, py, 5, P.LGRAY, 1.2); }
+    else if (jumps < 2) { vy = DJUMP_V; jumps = 2; sy = 1.35; burst(wx, py - 4, 7, P.ICE, 1.6); }
+    jbuf = 0; coyote = 0; grounded = false; sliding = false; sy = 1.3;
+    A.playSfx(1);
+  }
+  if (!pad.a.down && !pad.up.down && vy < -1.5) vy += 0.34;
+  vy += GRAV;
+  if (!grounded && down) vy += 0.22;
+  vy = Math.min(vy, 5.2);
+  py += vy;
+  var wasGrounded = grounded, impact = vy;
+  grounded = false;
+  if (vy >= 0) {
+    for (var i = 0; i < plats.length; i++) {
+      var p = plats[i];
+      if (wx > p.x - 4 && wx < p.x + p.w + 4 && prevY <= p.y + 0.01 && py >= p.y) {
+        py = p.y; land(wasGrounded, impact); break;
+      }
+    }
+    if (!grounded && py >= GY && !inPit(wx)) { py = GY; land(wasGrounded, impact); }
+  }
+  if (wasGrounded && !grounded) { coyote = 6; jumps = Math.max(jumps, 1); }
+  if (py > H + 12) { doDeath(); return; }
+  if (grounded) {
+    groundT++;
+    if (groundT % (sliding ? 3 : 6) === 0)
+      parts.push({ x: wx - 5, y: py - (sliding ? 2 : 0), vx: -v * 0.5 + (rng() - 0.5) * 0.6, vy: -rng() * 0.5, ci: P.LGRAY, life: 10 });
+  }
+  sy += (1 - sy) * 0.18;
+  var top = py - (sliding ? 7 : 13);
+  for (var o = 0; o < obst.length; o++) {
+    var ob = obst[o];
+    if (ob.kind === 'bar') {
+      if (wx + 4 > ob.x && wx - 4 < ob.x + ob.w && top < ob.y1 && py > ob.y0) { doDeath(); return; }
+    } else if (ob.kind === 'spike') {
+      if (wx + 3 > ob.x + 1 && wx - 3 < ob.x + ob.w - 1 && py > ob.y - 5) { doDeath(); return; }
+    } else {
+      if (wx + 3 > ob.x + 1 && wx - 3 < ob.x + ob.w - 1 && top < ob.y && py > ob.y - ob.h) { doDeath(); return; }
+    }
+  }
+  for (var c = 0; c < coins.length; c++) {
+    var co = coins[c];
+    co.tt++;
+    if (!co.taken && Math.abs(co.x - wx) < 9 && Math.abs(co.y - (py - 7)) < 12) {
+      co.taken = true;
+      coinCt++; combo++; comboT = 100;
+      burst(co.x, co.y, 7, P.GOLD, 1.6);
+      A.playSfx(2);
+      if (combo > 0 && combo % 10 === 0) { pop('COIN X' + combo + '!', co.x - 24, co.y - 14, P.YELLOW); shakeT = 4; }
+    }
+  }
+  if (parts.length > 30) parts.splice(0, parts.length - 30);
+}
+function updateParts() {
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.08;
+    if (--p.life <= 0) parts.splice(i, 1);
+  }
+  for (var j = pops.length - 1; j >= 0; j--) { pops[j].x -= v; if (--pops[j].life <= 0) pops.splice(j, 1); }
+}
+function doUpdate() {
+  t++;
+  if (scene === 'title') {
+    if (pad.a.pressed || pad.start.pressed) resetRun();
+    return;
+  }
+  if (scene === 'dying') {
+    deathT++;
+    updateParts();
+    if (deathT > 55) { writeSave(); scene = 'over'; overT = 0; }
+    return;
+  }
+  if (scene === 'over') {
+    overT++;
+    updateParts();
+    if (overT > 30 && (pad.a.pressed || pad.start.pressed)) scene = 'title';
+    return;
+  }
+  if (pad.start.pressed) paused = !paused;
+  if (paused) return;
+  updatePlay();
+}
+/* —— 世界地图:每帧增量重写可视区 —— */
+function buildWorldMap() {
+  S.mapSize(0, MW, MH);
+  S.mapSize(1, 60, 22);
+  // BG1:天空山丘(慢速视差)
+  var e1 = new Uint16Array(60 * 22);
+  for (var y = 0; y < 22; y++) for (var x = 0; x < 60; x++) {
+    var ti = T.SKY;
+    if (y >= 9 && y < 12) ti = T.MTF;
+    else if (y >= 12 && y < 15) ti = T.MTN;
+    else if (y >= 15) ti = T.HILL;
+    e1[y * 60 + x] = S.entry(ti);
+  }
+  e1[2 * 60 + 8] = S.entry(T.SUN);
+  e1[2 * 60 + 9] = S.entry(T.SUN);
+  e1[3 * 60 + 8] = S.entry(T.SUN);
+  e1[3 * 60 + 9] = S.entry(T.SUN);
+  for (var c = 0; c < 4; c++) {
+    var cx = 6 + c * 14, cy = 3 + (c % 2) * 2;
+    e1[cy * 60 + cx] = S.entry(T.CLOUD);
+    e1[cy * 60 + cx + 1] = S.entry(T.CLOUD);
+  }
+  S.setMap(1, 0, 0, 60, 22, e1);
+}
+function drawWorldTiles() {
+  var ox = camX();
+  var tx0 = Math.floor(ox / 8);
+  // 每帧重写可视 tile 列(30 列)
+  for (var c = 0; c <= 30; c++) {
+    var wxq = (tx0 + c) * 8;
+    var mx = ((tx0 + c) % MW + MW) % MW;
+    for (var ty = 0; ty < MH; ty++) {
+      var ti = 0;
+      var wy = ty * 8;
+      if (wy >= GY) {
+        if (inPit(wxq)) ti = 0;
+        else if (wy === GY) ti = T.GRASS;
+        else ti = T.DIRT;
+      } else {
+        // 障碍
+        for (var o = 0; o < obst.length; o++) {
+          var ob = obst[o];
+          if (wxq + 8 <= ob.x || wxq >= ob.x + ob.w) continue;
+          if (ob.kind === 'spike' && wy >= GY - 8 && wy < GY) ti = T.SPIKE;
+          else if (ob.kind === 'crate' && wy > GY - ob.h - 1 && wy <= GY) ti = T.CRATE;
+          else if (ob.kind === 'wall' && wy > GY - ob.h - 1 && wy <= GY) ti = T.WALL;
+          else if (ob.kind === 'bar' && wy >= ob.y0 - (ob.y1 - ob.y0) && wy < ob.y1) {
+            ti = (wy < ob.y0) ? ((wxq - ob.x) % 12 < 6 ? T.BAR_R : T.BAR_Y) : T.BAR;
+          }
+        }
+        // 浮台
+        for (var p = 0; p < plats.length; p++) {
+          var pl = plats[p];
+          if (wxq + 8 <= pl.x || wxq >= pl.x + pl.w) continue;
+          if (wy >= pl.y && wy < pl.y + 8) ti = T.PLAT;
+        }
+      }
+      S.setTile(0, mx, ty, ti ? S.entry(ti) : 0);
+    }
+  }
+  S.scroll(0, ox, 0);
+  if (shakeT > 0) { S.scroll(0, ox + ((t & 1) * 2 - 1), ((t & 1) * 2 - 1)); shakeT--; }
+  S.scroll(1, Math.floor(ox * 0.3), 0);
+}
+function draw() {
+  if (scene !== 'title') drawWorldTiles();
+  // 精灵
+  var i = 0;
+  if (scene !== 'title' && (scene !== 'dying' || deathT > 14)) {
+    var ox = camX();
+    S.setSprite(i++, { x: 52 - 8, y: (py - (sliding ? 7 : 14)) | 0, tile: sliding ? SLIDE : ((grounded && (t >> 3) & 1) ? RUN1 : RUN0), prio: 3 });
+  }
+  for (var c = 0; c < coins.length && i < 124; c++) {
+    if (coins[c].taken) continue;
+    var sx = (coins[c].x - camX()) | 0;
+    if (sx < -8 || sx > 244) continue;
+    S.setSprite(i++, { x: sx - 4, y: (coins[c].y + Math.sin(coins[c].tt * 0.12) * 2) | 0, tile: COIN + ((coins[c].tt >> 3) & 1), prio: 2 });
+  }
+  for (var pi = 0; pi < parts.length && i < 128; pi++)
+    S.setSprite(i++, { x: (parts[pi].x - camX() - 4) | 0, y: parts[pi].y | 0, tile: DOT, prio: 3 });
+  // 文本
+  if (scene === 'title') {
+    bios.text(42, 14, 'PIXEL DASH', { color: P.ORANGE, scale: 2 });
+    bios.text(66, 38, 'ENDLESS RUNNER', { color: P.CYAN });
+    if (best > 0) bios.text(78, 52, 'BEST ' + best + 'M', { color: P.YELLOW });
+    if ((t % 60) < 38) bios.text(66, 90, 'PRESS START', { color: P.WHITE });
+    bios.text(48, 112, 'Z OR UP - JUMP X2', { color: P.LGRAY });
+    bios.text(42, 124, 'DOWN - SLIDE / FALL', { color: P.LGRAY });
+    bios.text(48, 138, 'MIND SPIKES AND PITS', { color: P.SLATE });
+  } else {
+    bios.text(4, 2, score() + 'M', { color: P.WHITE });
+    bios.text(4, 16, 'HI ' + Math.max(best, score()), { color: P.ICE });
+    bios.text(216, 2, v.toFixed(1), { color: P.CYAN });
+    bios.text(16, 16, 'C' + coinCt, { color: P.YELLOW });
+    if (combo >= 5 && comboT > 0) bios.text(52, 16, 'COMBO ' + combo, { color: P.GOLD });
+    for (var pj = 0; pj < pops.length; pj++)
+      bios.text((pops[pj].x - camX()) | 0, pops[pj].y | 0, pops[pj].t, { color: pops[pj].ci });
+    if (scene === 'over') {
+      bios.text(78, 56, 'YOU DIED', { color: P.RED, scale: 2 });
+      bios.text(66, 82, 'SCORE ' + score() + 'M', { color: P.WHITE });
+      bios.text(72, 96, 'COINS ' + coinCt, { color: P.YELLOW });
+      bios.text(72, 110, 'BEST ' + best + 'M', { color: P.GOLD });
+      if (overT > 30 && (t % 60) < 38) bios.text(66, 128, 'PRESS START', { color: P.WHITE });
+    }
+    if (paused) bios.text(90, 84, 'PAUSED', { color: P.WHITE, scale: 2 });
+  }
+}
+function writeSave() {
+  if (score() > best) { best = score(); try { save(new Uint8Array([best & 255, (best >> 8) & 255])); } catch (e) { } }
+}
+function init() {
+  S.loadTiles('bg', cart.seg('tilesbg', 0).data, 0);
+  S.loadTiles('obj', cart.seg('tilesobj', 0).data, 0);
+  S.backdrop(P.SKY1);
+  var d = load();
+  best = d && d.length >= 2 ? d[0] | (d[1] << 8) : 0;
+  scene = 'title'; paused = false;
+  wx = 60; py = GY; vy = 0; v = 2.3; jumps = 0;
+  coyote = 0; jbuf = 0; sliding = false; grounded = true; sy = 1;
+  pits = []; obst = []; plats = []; coins = []; parts = []; pops = [];
+  genX = 220; dist = 0; nextMile = 400; coinCt = 0; combo = 0; comboT = 0;
+  deathT = 0; overT = 0; flashT = 0; freeze = 0;
+  buildWorldMap();
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

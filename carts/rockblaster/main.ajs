@@ -1,0 +1,251 @@
+/* carts/rockblaster/main.ajs — Rock Blaster:模式2 旋转射击(M12 示例卡带二)
+ * 任意旋转 blit + 矢量感粒子 + 波次陨石 + 高分存档 + BGM/SFX
+ */
+var state = 'title', t = 0;
+var ship, bullets, rocks, parts, stars, ufo;
+var score = 0, hi = 0, lives = 3, wave = 0, waveT = 0, deadT = 0, inv = 0, gunCd = 0;
+
+function init() {
+  R.loadBitmap('ship', cart.seg('bitmaps', 0).data, 0);
+  R.loadBitmap('rock24', cart.seg('bitmaps', 1).data, 0);
+  R.loadBitmap('rock16', cart.seg('bitmaps', 2).data, 0);
+  R.loadBitmap('rock10', cart.seg('bitmaps', 3).data, 0);
+  R.loadBitmap('bullet', cart.seg('bitmaps', 4).data, 0);
+  R.loadBitmap('ufo', cart.seg('bitmaps', 5).data, 0);
+  var d = load();
+  if (d && d.length >= 4) hi = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24);
+  rng(77);
+  stars = [];
+  for (var i = 0; i < 70; i++) stars.push([rng() * 240, rng() * 176, rng() * 2 + 0.2]);
+  reset();
+  A.playTrack(0);
+}
+function reset() {
+  ship = { x: 120, y: 88, h: -1.5708, vx: 0, vy: 0 };
+  bullets = []; rocks = []; parts = []; ufo = null;
+  score = 0; lives = 3; wave = 0; inv = 0; gunCd = 0;
+  nextWave();
+}
+function nextWave() {
+  wave++;
+  waveT = 0;
+  var n = 2 + wave;
+  for (var i = 0; i < n; i++) {
+    var ang = rng() * 6.2832;
+    var dist = 130 + rng() * 80;
+    var cx = 120 + Math.cos(ang) * dist, cy = 88 + Math.sin(ang) * dist * 0.7;
+    var sp = 0.3 + rng() * 0.5 + wave * 0.04;
+    rocks.push(mkRock(cx, cy, Math.cos(ang + 1.5) * sp, Math.sin(ang + 1.5) * sp, 3));
+  }
+  if (wave >= 2 && rng() < 0.6) {
+    ufo = { x: rng() < 0.5 ? -20 : 260, y: 20 + rng() * 40, vx: 0, dir: 1 };
+    ufo.vx = (ufo.x < 0 ? 1 : -1) * (0.5 + wave * 0.05);
+  }
+}
+function mkRock(x, y, vx, vy, size) {
+  return {
+    x: x, y: y, vx: vx, vy: vy, size: size,
+    rot: (rng() * 256) | 0, vr: (rng() - 0.5) * 6,
+    id: size === 3 ? 'rock24' : size === 2 ? 'rock16' : 'rock10',
+    w: size === 3 ? 24 : size === 2 ? 16 : 10
+  };
+}
+
+function boom(x, y, n, col) {
+  for (var i = 0; i < n; i++) {
+    var a = rng() * 6.2832, s = rng() * 2.5 + 0.5;
+    parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 18 + rng() * 20, c: col });
+  }
+}
+
+function hurt() {
+  if (inv > 0) return;
+  lives--;
+  boom(ship.x, ship.y, 26, 196);
+  A.playSfx(6);
+  if (lives <= 0) {
+    state = 'dead'; deadT = 0;
+    if (score > hi) {
+      hi = score;
+      save(new Uint8Array([hi & 255, (hi >> 8) & 255, (hi >> 16) & 255, (hi >> 24) & 255]));
+    }
+  } else {
+    ship.x = 120; ship.y = 88; ship.vx = 0; ship.vy = 0; ship.h = -1.5708;
+    inv = 110;
+  }
+}
+
+function update() {
+  t++;
+  if (state === 'title') {
+    if (pad.a.pressed || pad.start.pressed) { state = 'play'; reset(); A.playTrack(0); }
+    return drawTitle();
+  }
+  if (state === 'dead') {
+    deadT++;
+    stepWorld(true);
+    if ((pad.a.pressed && deadT > 40) || deadT > 300) { state = 'title'; A.stopTrack(); }
+    return drawDead();
+  }
+  if (inv > 0) inv--;
+  if (gunCd > 0) gunCd--;
+
+  // ---- 飞船控制:左右旋转 / 上推进 / A 射击(§6.4 任意旋转) ----
+  var turn = 0.085;
+  if (pad.left.down) ship.h -= turn;
+  if (pad.right.down) ship.h += turn;
+  if (pad.up.down) {
+    ship.vx += Math.cos(ship.h) * 0.12;
+    ship.vy += Math.sin(ship.h) * 0.12;
+  }
+  ship.vx *= 0.985; ship.vy *= 0.985;
+  var sp = Math.hypot(ship.vx, ship.vy);
+  if (sp > 4) { ship.vx *= 4 / sp; ship.vy *= 4 / sp; }
+  ship.x += ship.vx; ship.y += ship.vy;
+  if (ship.x < 8) { ship.x = 8; ship.vx = Math.abs(ship.vx) * 0.5; }
+  if (ship.x > 232) { ship.x = 232; ship.vx = -Math.abs(ship.vx) * 0.5; }
+  if (ship.y < 8) { ship.y = 8; ship.vy = Math.abs(ship.vy) * 0.5; }
+  if (ship.y > 168) { ship.y = 168; ship.vy = -Math.abs(ship.vy) * 0.5; }
+
+  if (pad.a.pressed && gunCd === 0) {
+    bullets.push({ x: ship.x + Math.cos(ship.h) * 9, y: ship.y + Math.sin(ship.h) * 9, vx: Math.cos(ship.h) * 5 + ship.vx, vy: Math.sin(ship.h) * 5 + ship.vy, life: 55 });
+    gunCd = 7;
+    A.playSfx(5);
+  }
+
+  stepWorld(false);
+
+  // 波次推进
+  waveT++;
+  if (rocks.length === 0 && !ufo && waveT > 40) {
+    score += 100;
+    nextWave();
+  }
+  drawPlay();
+}
+
+function stepWorld(noShip) {
+  // 子弹
+  for (var i = bullets.length - 1; i >= 0; i--) {
+    var b = bullets[i];
+    b.x += b.vx; b.y += b.vy; b.life--;
+    if (b.life <= 0 || b.x < -5 || b.x > 245 || b.y < -5 || b.y > 181) bullets.splice(i, 1);
+  }
+  // 陨石
+  for (var ri = rocks.length - 1; ri >= 0; ri--) {
+    var r = rocks[ri];
+    r.x += r.vx; r.y += r.vy; r.rot = (r.rot + r.vr) & 255;
+    if (r.x < -r.w) r.x = 244; if (r.x > 244) r.x = -r.w;
+    if (r.y < -r.w) r.y = 180; if (r.y > 180) r.y = -r.w;
+    // 子弹命中
+    var hit = -1;
+    for (var bi = 0; bi < bullets.length; bi++) {
+      var bb = bullets[bi];
+      if (Math.abs(bb.x - r.x) < r.w / 2 + 2 && Math.abs(bb.y - r.y) < r.w / 2 + 2) { hit = bi; break; }
+    }
+    if (hit >= 0) {
+      bullets.splice(hit, 1);
+      score += r.size === 3 ? 20 : r.size === 2 ? 50 : 100;
+      boom(r.x, r.y, r.size === 3 ? 14 : 8, 214);
+      A.playSfx(r.size === 3 ? 6 : 7);
+      if (r.size > 1) {
+        for (var q = 0; q < 2; q++) {
+          rocks.push(mkRock(r.x, r.y, r.vx + (rng() - 0.5) * 1.6, r.vy + (rng() - 0.5) * 1.6, r.size - 1));
+        }
+      }
+      rocks.splice(ri, 1);
+      continue;
+    }
+    // 撞船
+    if (!noShip && Math.abs(r.x - ship.x) < r.w / 2 + 6 && Math.abs(r.y - ship.y) < r.w / 2 + 6) {
+      hurt();
+      rocks.splice(ri, 1);
+    }
+  }
+  // UFO
+  if (ufo) {
+    ufo.x += ufo.vx;
+    ufo.y += Math.sin(t * 0.05) * 0.6;
+    if (ufo.x < -30 || ufo.x > 270) ufo = null;
+    else {
+      for (var b2 = bullets.length - 1; b2 >= 0; b2--) {
+        if (Math.abs(bullets[b2].x - ufo.x) < 9 && Math.abs(bullets[b2].y - ufo.y) < 8) {
+          bullets.splice(b2, 1);
+          score += 200;
+          boom(ufo.x, ufo.y, 18, 196);
+          A.playSfx(7);
+          ufo = null;
+          break;
+        }
+      }
+    }
+  }
+  // 粒子
+  for (var pi = parts.length - 1; pi >= 0; pi--) {
+    var p = parts[pi];
+    p.x += p.vx; p.y += p.vy; p.vx *= 0.97; p.vy *= 0.97; p.life--;
+    if (p.life <= 0) parts.splice(pi, 1);
+  }
+}
+
+// ---- 绘制(模式2 固件光栅) ----
+function drawPlay() {
+  R.clear(16);
+  // 星空(视差随飞船速度)
+  for (var i = 0; i < stars.length; i++) {
+    var s = stars[i];
+    s[0] -= ship.vx * s[2] * 0.25;
+    s[1] -= ship.vy * s[2] * 0.25;
+    if (s[0] < 0) s[0] += 240; if (s[0] >= 240) s[0] -= 240;
+    if (s[1] < 0) s[1] += 176; if (s[1] >= 176) s[1] -= 176;
+    R.pset(s[0] | 0, s[1] | 0, s[2] > 1.6 ? 252 : 240);
+  }
+  // 陨石:任意角度旋转 blit(1/256 圆)
+  for (var ri = 0; ri < rocks.length; ri++) {
+    var r = rocks[ri];
+    R.blit(r.id, (r.x - r.w / 2) | 0, (r.y - r.w / 2) | 0, { rot: r.rot });
+  }
+  if (ufo) R.blit('ufo', (ufo.x - 7) | 0, (ufo.y - 6) | 0, { flip: ufo.vx < 0 });
+  // 子弹
+  for (var bi = 0; bi < bullets.length; bi++) R.blit('bullet', (bullets[bi].x - 2) | 0, (bullets[bi].y - 2) | 0, {});
+  // 飞船(无敌闪烁:棋盘帧)
+  if (inv === 0 || (t & 3) < 2) {
+    R.blit('ship', (ship.x - 8) | 0, (ship.y - 8) | 0, { rot: ((ship.h / 6.2832 * 256) | 0) & 255 });
+  }
+  // 推进焰(矢量感:线)
+  if (pad.up.down && state === 'play') {
+    var fx = ship.x - Math.cos(ship.h) * 11, fy = ship.y - Math.sin(ship.h) * 11;
+    R.line(fx, fy, fx - Math.cos(ship.h) * (4 + (t & 3)), fy - Math.sin(ship.h) * (4 + (t & 3)), (t & 4) ? 208 : 220, 2);
+  }
+  // 粒子
+  for (var pi = 0; pi < parts.length; pi++) {
+    var p = parts[pi];
+    R.pset(p.x | 0, p.y | 0, p.c);
+  }
+  // HUD
+  R.text(4, 2, 'SCORE ' + score, { color: 15 });
+  R.text(150, 2, 'HI ' + hi, { color: 220 });
+  R.text(4, 164, 'WAVE ' + wave, { color: 11 });
+  for (var l = 0; l < lives; l++) R.blit('ship', 200 + l * 13, 163, { rot: 0, sx: 0.6, sy: 0.6 });
+}
+
+function drawTitle() {
+  R.clear(16);
+  for (var i = 0; i < stars.length; i++) R.pset(stars[i][0] | 0, stars[i][1] | 0, 240);
+  R.text(36, 30, 'ROCK BLASTER', { color: 11, scale: 2 });
+  R.blit('rock24', 24, 90, { rot: (t * 3) & 255 });
+  R.blit('rock16', 200, 120, { rot: (-t * 5) & 255 });
+  R.blit('ship', 112, 60, { rot: ((t * 2) & 255) });
+  if ((t >> 4) & 1) R.text(66, 150, 'PRESS A / START', { color: 15 });
+  R.text(30, 14, 'HI-SCORE ' + hi, { color: 220 });
+}
+
+function drawDead() {
+  drawPlay();
+  this.voidStar = 0;
+  R.rect(40, 56, 160, 60, 0, true);
+  R.rect(40, 56, 160, 60, 196, false);
+  R.text(84, 64, 'GAME OVER', { color: 196, scale: 1 });
+  R.text(72, 84, 'FINAL SCORE ' + score, { color: 15 });
+  if (score >= hi && score > 0) R.text(84, 98, 'NEW HI-SCORE!', { color: 51 });
+}

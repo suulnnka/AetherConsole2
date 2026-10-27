@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · 音频工作站</title>
+<link rel="stylesheet" href="tools.css">
+<style>
+  canvas.pixel { image-rendering: pixelated; }
+  #roll { cursor: crosshair; outline: 1px solid #333; }
+  #musGrid { cursor: pointer; outline: 1px solid #333; }
+  .tabs { display: flex; gap: 6px; }
+  .tabs label { padding: 4px 12px; background: #26262e; border: 1px solid #3a3a48; border-radius: 4px; cursor: pointer; }
+  .tabs input { display: none; }
+  .tabs label:has(input:checked) { background: #2d4a6e; border-color: #3d6391; color: #fff; }
+  #tList { display: flex; flex-wrap: wrap; gap: 4px; }
+  #tParams .row { margin-bottom: 6px; }
+  .scrollX { overflow: auto; max-width: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1>音频工作站</h1>
+  <span class="crumb">音色三族 · 横向钢琴卷帘(64 步 4/4)· music 8 轨(bpm+swing 整曲共有)</span>
+  <span class="spacer"></span>
+  <a href="index.html">← 工具首页</a>
+</header>
+<main>
+  <section>
+    <div class="row">
+      <div class="tabs">
+        <label><input type="radio" name="tab" value="timbre" checked><span>① 音色</span></label>
+        <label><input type="radio" name="tab" value="pattern"><span>② pattern</span></label>
+        <label><input type="radio" name="tab" value="music"><span>③ music</span></label>
+      </div>
+      <span class="spacer" style="flex:1"></span>
+      <canvas id="meters" width="120" height="34" class="pixel"></canvas>
+      <canvas id="scope" width="240" height="34" class="pixel"></canvas>
+      <span class="muted">监听:24kHz → μ律 完整链路</span>
+    </div>
+  </section>
+
+  <section id="paneTimbre">
+    <h2>音色库(≤64 件,三族)</h2>
+    <div class="row" style="align-items:flex-start">
+      <div class="col" style="width:240px">
+        <div id="tList"></div>
+        <button id="tNew">+ 新建音色</button>
+        <div class="muted" style="font-size:12px;margin-top:6px">键盘试奏:Z S X D C V G B H N J M(半音阶);按 1 = 低音鼓位</div>
+      </div>
+      <div id="tParams" class="col" style="flex:1"></div>
+    </div>
+  </section>
+
+  <section id="panePattern" style="display:none">
+    <h2>pattern · 横向钢琴卷帘(64 步 = 4 小节 × 16 分;固定 4/4;单复声)</h2>
+    <div class="row" style="margin-bottom:8px">
+      <select id="patSel"></select>
+      <button id="patNew">+ 新建</button>
+      <label>乐器 <select id="patTimbre"></select></label>
+      <label>BPM <input type="number" id="patBpm" value="120" min="40" max="240" style="width:64px"></label>
+      <button id="patPlay" class="primary">▶ 试听</button>
+      <button id="patStop">■ 停</button>
+      <span class="muted">左键:置音/加长;右键:删音;下方 VOL/FX1/FX2:左键画,音量循环 1→0.5→无</span>
+    </div>
+    <div class="scrollX"><canvas id="roll" class="pixel"></canvas></div>
+    <div id="fxList" class="col" style="margin-top:8px"></div>
+  </section>
+
+  <section id="paneMusic" style="display:none">
+    <h2>music · 8 音轨 × 16 小节(pattern 编排;bpm/swing 整曲共有)</h2>
+    <div class="row" style="margin-bottom:8px">
+      <select id="musSel"></select>
+      <button id="musNew">+ 新建</button>
+      <label>BPM <input type="number" id="musBpm" value="120" min="40" max="240" style="width:64px"></label>
+      <label>swing <input type="number" id="musSwing" value="0" min="0" max="0.5" step="0.02" style="width:56px"></label>
+      <label>循环小节 <input type="number" id="musLoop" value="16" min="1" max="16" style="width:56px"></label>
+      <button id="musPlay" class="primary">▶ 整曲试听</button>
+      <button id="musStop">■ 停</button>
+      <span class="muted">左键:置 pattern(重复点击递增);右键:删除</span>
+    </div>
+    <div class="scrollX"><canvas id="musGrid" class="pixel"></canvas></div>
+  </section>
+
+  <section>
+    <h2>导入 / 导出(audio 段)</h2>
+    <div class="row">
+      <button id="exportAud" class="primary">导出 audio.aud</button>
+      <button id="importAud">导入 .aud</button>
+      <input type="file" id="audFile" accept=".aud" style="display:none">
+      <button id="importWav">导入 WAV 采样(→24k μ律)</button>
+      <input type="file" id="wavFile" accept=".wav" style="display:none">
+    </div>
+  </section>
+</main>
+<script src="../js/core/ansi.js"></script>
+<script src="../js/core/comp.js"></script>
+<script src="../js/core/mulaw.js"></script>
+<script src="../js/core/cart.js"></script>
+<script src="../js/host/audio.js"></script>
+<script src="../js/tools/audiowork.js"></script>
+</body>
+</html>

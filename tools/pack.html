@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · 打包环境</title>
+<link rel="stylesheet" href="tools.css">
+</head>
+<body>
+<header>
+  <h1>打包环境</h1>
+  <span class="crumb">文件夹即项目(T14):自动识别 配置/图标/代码/字体/图集/音乐集</span>
+  <span class="spacer"></span>
+  <a href="index.html">← 工具首页</a>
+</header>
+<main>
+  <section id="dropSec">
+    <h2>1 · 拖入项目文件夹</h2>
+    <div class="dropzone" id="drop">
+      把游戏文件夹拖到这里(或 <button id="btnPick">选择文件夹</button>)
+      <div class="muted" style="margin-top:6px">cart.json · cover.png/bin · main.ajs|code/ · font.afnt · gfx/ · audio/ · data/</div>
+    </div>
+    <input type="file" id="dirPick" webkitdirectory style="display:none">
+  </section>
+
+  <section id="manSec" style="display:none">
+    <h2>2 · manifest(缺失项已给默认值,可改)</h2>
+    <div class="row">
+      <label>ID(8×[A-Z0-9])<input type="text" id="mId" maxlength="8" size="10"></label>
+      <label>标题<input type="text" id="mTitle" size="24"></label>
+      <label>版本<input type="number" id="mVer" min="1" style="width:64px"></label>
+      <label>默认模式
+        <select id="mMode"><option value="1">1 · 精灵</option><option value="2">2 · 光栅</option></select></label>
+      <label>采样
+        <select id="mSampling"><option>auto</option><option>nearest</option><option>smooth</option></select></label>
+      <label><input type="checkbox" id="mObf"> 混淆出品(防提取,轻量非加密)</label>
+      <label><input type="checkbox" id="mSmoke" checked> 装载冒烟(无头跑 90 帧)</label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" id="btnBuild">构建 .aec</button>
+      <span id="regStatus" class="muted"></span>
+    </div>
+  </section>
+
+  <section id="outSec" style="display:none">
+    <h2>3 · 预算与产物</h2>
+    <div id="budgetBar" style="background:#101016;border:1px solid #26262e;height:18px;margin-bottom:8px;position:relative">
+      <div id="budgetFill" style="height:100%;background:#2d4a6e;width:0%"></div>
+      <span id="budgetText" style="position:absolute;left:8px;top:1px;font-size:12px;color:#cfcfda"></span>
+    </div>
+    <table id="segTable"><thead><tr><th>段</th><th>类型</th><th>原始 B</th><th>压缩后 B</th><th>压缩</th></tr></thead><tbody></tbody></table>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="btnDownload">下载 .aec</button>
+      <button id="btnReport">下载构建报告 (json)</button>
+      <button id="btnLib">导入主机卡带库</button>
+      <span id="buildStatus"></span>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script src="../js/core/ansi.js"></script>
+<script src="../js/core/comp.js"></script>
+<script src="../js/core/mulaw.js"></script>
+<script src="../js/core/font.js"></script>
+<script src="../js/core/biosfont.js"></script>
+<script src="../js/core/cart.js"></script>
+<script src="../js/core/packer.js"></script>
+<script src="../js/host/input.js"></script>
+<script src="../js/host/mode1.js"></script>
+<script src="../js/host/mode2.js"></script>
+<script src="../js/host/ajs.js"></script>
+<script src="../js/host/audio.js"></script>
+<script src="../js/host/bios.js"></script>
+<script src="../js/host/machine.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const log = (msg, cls) => {
+  $('log').textContent += (cls === 'err' ? '[ERR] ' : cls === 'warn' ? '[警告] ' : '') + msg + '\n';
+  $('log').scrollTop = 1e9;
+};
+
+let files = null, lastBytes = null, lastReport = null;
+
+// —— 文件夹读取:拖拽(webkitGetAsEntry 递归)+ 目录选择 ——
+async function readEntries(entry, path, out) {
+  if (entry.isFile) {
+    const f = await new Promise((res, rej) => entry.file(res, rej));
+    out.push({ path: path + f.name, data: new Uint8Array(await f.arrayBuffer()) });
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    for (; ;) {
+      const entries = await new Promise((res, rej) => reader.readEntries(res, rej));
+      if (!entries.length) break;
+      for (const e of entries) await readEntries(e, path + entry.name + '/', out);
+    }
+  }
+}
+
+async function acceptFiles(list) {
+  const out = [];
+  for (const item of list) {
+    const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+    if (entry) await readEntries(entry, '', out);
+  }
+  if (!out.length) return;
+  files = out;
+  log('读入 ' + out.length + ' 个文件:' + out.map(f => f.path).join(', ').slice(0, 300));
+  // manifest 预填
+  try {
+    const built = await AC2.Packer.buildFromFiles(files, {});
+    const m = built.manifest;
+    $('mId').value = m.id; $('mTitle').value = m.title; $('mVer').value = m.version;
+    $('mMode').value = String(m.mode); $('mSampling').value = m.sampling;
+    $('manSec').style.display = '';
+    // ID 登记
+    const reg = AC2.Packer.Registry.check(m.id, m.version);
+    $('regStatus').textContent = reg ? ('⚠ ' + reg) : ('ID ' + m.id + ' 可用(本地 registry)');
+    $('regStatus').className = reg ? 'warn' : 'muted';
+  } catch (e) {
+    log(e.message, 'err');
+    $('manSec').style.display = '';
+    $('regStatus').textContent = e.message;
+  }
+}
+
+const drop = $('drop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('active'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('active'));
+drop.addEventListener('drop', async e => {
+  e.preventDefault(); drop.classList.remove('active');
+  await acceptFiles(Array.from(e.dataTransfer.items));
+});
+$('btnPick').onclick = () => $('dirPick').click();
+$('dirPick').onchange = async () => {
+  const out = [];
+  for (const f of $('dirPick').files) out.push({ path: f.webkitRelativePath || f.name, data: new Uint8Array(await f.arrayBuffer()) });
+  files = out;
+  log('读入 ' + out.length + ' 个文件');
+  $('dirPick').value = '';
+  $('dirPick').dispatchEvent(new Event('_x'));
+  await refreshManifest();
+};
+async function refreshManifest() {
+  try {
+    const built = await AC2.Packer.buildFromFiles(files, {});
+    const m = built.manifest;
+    $('mId').value = m.id; $('mTitle').value = m.title; $('mVer').value = m.version;
+    $('mMode').value = String(m.mode); $('mSampling').value = m.sampling;
+    $('manSec').style.display = '';
+    const reg = AC2.Packer.Registry.check(m.id, m.version);
+    $('regStatus').textContent = reg ? ('⚠ ' + reg) : ('ID ' + m.id + ' 可用(本地 registry)');
+    $('regStatus').className = reg ? 'warn' : 'muted';
+  } catch (e) { log(e.message, 'err'); $('manSec').style.display = ''; }
+}
+
+$('btnBuild').onclick = async () => {
+  if (!files) return;
+  // 应用 UI 上的 manifest 修改
+  const cj = files.find(f => f.path.toLowerCase() === 'cart.json');
+  const man = {
+    id: $('mId').value.toUpperCase(), title: $('mTitle').value,
+    version: +$('mVer').value || 1, mode: +$('mMode').value,
+    sampling: $('mSampling').value
+  };
+  const cjData = new TextEncoder().encode(JSON.stringify(man, null, 2));
+  if (cj) cj.data = cjData; else files.push({ path: 'cart.json', data: cjData });
+  log('构建中(' + ($('mObf').checked ? '混淆' : '标准') + ')…');
+  try {
+    const built = await AC2.Packer.buildFromFiles(files, { obfuscate: $('mObf').checked });
+    lastBytes = built.bytes; lastReport = built.report;
+    renderReport(built.report);
+    if ($('mSmoke').checked) {
+      log('装载冒烟…');
+      const s = await AC2.Packer.smoke(built.bytes, 90);
+      if (s.ok) log('冒烟通过:90 帧,logic ' + s.logicMs.toFixed(2) + 'ms / draw ' + s.drawMs.toFixed(2) + 'ms');
+      else log('冒烟失败 @' + s.stage + ': ' + s.error + '\n' + (s.stack || '').split('\n').slice(0, 4).join('\n'), 'err');
+    }
+    AC2.Packer.Registry.register(built.report.id, built.report.title, built.report.version);
+    $('buildStatus').textContent = built.report.ok ? '✓ 构建成功' : '✗ 超出 256KB';
+    $('buildStatus').className = built.report.ok ? 'ok' : 'err';
+  } catch (e) {
+    log('构建失败: ' + e.message, 'err');
+  }
+};
+
+function renderReport(r) {
+  $('outSec').style.display = '';
+  const pct = Math.min(100, r.cartBytes / r.limit * 100);
+  $('budgetFill').style.width = pct + '%';
+  $('budgetFill').style.background = r.ok ? (pct > 85 ? '#d8a657' : '#2d4a6e') : '#e06c75';
+  $('budgetText').textContent = r.cartBytes.toLocaleString() + ' / ' + r.limit.toLocaleString() + ' B(' + pct.toFixed(1) + '%,余 ' + r.margin.toLocaleString() + 'B)';
+  const tb = $('segTable').querySelector('tbody');
+  tb.innerHTML = '';
+  for (const s of r.segments) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${s.name}</td><td>${s.type}</td><td>${s.raw.toLocaleString()}</td><td>${s.comp.toLocaleString()}</td><td>${s.compressed ? '✓' : '—'}</td>`;
+    tb.appendChild(tr);
+  }
+  for (const w of r.warnings) log(w, 'warn');
+}
+
+$('btnDownload').onclick = () => {
+  if (!lastBytes) return;
+  download(new Blob([lastBytes]), (lastReport.id || 'cart') + (lastReport.obfuscated ? '.obf' : '') + '.aec');
+};
+$('btnReport').onclick = () => {
+  if (!lastReport) return;
+  download(new Blob([JSON.stringify(lastReport, null, 2)], { type: 'application/json' }), lastReport.id + '.build.json');
+};
+$('btnLib').onclick = async () => {
+  if (!lastBytes) return;
+  try { await AC2.Lib.add(lastBytes); log('已导入主机卡带库(主页刷新菜单可见)'); }
+  catch (e) { log('导入失败: ' + e.message, 'err'); }
+};
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+</script>
+</body>
+</html>

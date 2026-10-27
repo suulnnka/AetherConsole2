@@ -1,0 +1,991 @@
+/* carts/fps/main.ajs — PALE CITADEL(AC1 移植 · 模式2)
+ * 软件 3D:z-buffer 多边形光栅(AABB 盒体城市)+ 逐行地面投影 + 布告板敌人。
+ * AC1 移植修正:原版左右平移反向(按左实际向右),此处已修正。
+ * 输入:WASD/方向移动 · 鼠标转向(视口内绝对偏移)· Z/左键开火 · X/右键跳 · Enter 暂停。
+ */
+var P = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+
+var W = 240, H = 176, CX = 120, CY = 88;
+var NEARZ = 0.3, STEP = 0.55;
+var EYE = 1.62, PR = 0.36, PH = 1.72;
+var GRAV = 14, JUMP_V = 5.6;
+var F = 150, SENS = 0.0032, PITCH_MAX = 1.35;
+var BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+var SCHEMES = { ink: P.BLACK, navy: P.INKB, steel: P.INKB, gray: P.DGRAY, slate: P.BLACK };
+
+var boxes = [];
+function B(x, z, w, d, y0, y1, scheme) {
+  boxes.push({ x0: x, z0: z, x1: x + w, z1: z + d, y0: y0, y1: y1, ed: SCHEMES[scheme || 'gray'],
+               cx: x + w / 2, cz: z + d / 2, rr: Math.sqrt(w * w + d * d) / 2 });
+}
+function stairs(x, z, w, rise, run, steps, dir, scheme, y0) {
+  y0 = y0 || 0;
+  for (var i = 0; i < steps; i++) {
+    var top = y0 + rise * (i + 1);
+    if (dir === 0) B(x + i * run, z, run + 0.05, w, 0, top, scheme);
+    else if (dir === 1) B(x - (i + 1) * run, z, run + 0.05, w, 0, top, scheme);
+    else if (dir === 2) B(x, z + i * run, w, run + 0.05, 0, top, scheme);
+    else B(x, z - (i + 1) * run, w, run + 0.05, 0, top, scheme);
+  }
+}
+function bridge(x, z, w, d) {
+  B(x, z, w, d, 7.95, 8.55, 'slate');
+  if (w >= d) { B(x, z - 0.35, w, 0.35, 8.55, 9.4, 'navy'); B(x, z + d, w, 0.35, 8.55, 9.4, 'navy'); }
+  else { B(x - 0.35, z, 0.35, d, 8.55, 9.4, 'navy'); B(x + w, z, 0.35, d, 8.55, 9.4, 'navy'); }
+}
+function buildMap() {
+  for (var i = 0; i < 8; i++) {
+    var c = i & 1 ? 'navy' : 'ink';
+    B(2 + i * 29.5, 2, 29.5, 3, 0, 11 + (i % 3) * 1.5, c);
+    B(2 + i * 29.5, 235, 29.5, 3, 0, 11 + ((i + 1) % 3) * 1.5, c);
+    B(2, 2 + i * 29.5, 3, 29.5, 0, 11 + ((i + 2) % 3) * 1.5, c);
+    B(235, 2 + i * 29.5, 3, 29.5, 0, 11 + ((i + 3) % 3) * 1.5, c);
+  }
+  B(98, 98, 44, 44, 0, 1.6, 'gray');
+  stairs(115, 93.2, 10, 0.4, 1.2, 4, 2, 'gray');
+  stairs(125, 146.8, 10, 0.4, 1.2, 4, 3, 'gray');
+  stairs(93.2, 115, 10, 0.4, 1.2, 4, 0, 'gray');
+  stairs(146.8, 125, 10, 0.4, 1.2, 4, 1, 'gray');
+  for (var p = 0; p < 8; p++) {
+    var tt = 101 + p * 5.43;
+    B(tt, 100.2, 1.5, 1.5, 1.6, 5.6, 'navy');
+    B(tt, 138.3, 1.5, 1.5, 1.6, 5.6, 'navy');
+    B(100.2, tt, 1.5, 1.5, 1.6, 5.6, 'navy');
+    B(138.3, tt, 1.5, 1.5, 1.6, 5.6, 'navy');
+  }
+  B(115.5, 115.5, 9, 9, 0, 17, 'navy');
+  var M = 1.2, X0 = 115.5 - M, Z0 = 115.5 - M, SIDE = 9 + 2 * M, ST = 2.4;
+  for (var k = 0; k < 17; k++) {
+    var u = k / 17 * 4, side = Math.min(3, u | 0), f2 = u - side;
+    var x, z;
+    if (side === 0) { x = X0 + f2 * SIDE; z = Z0; }
+    else if (side === 1) { x = X0 + SIDE - ST; z = Z0 + f2 * SIDE; }
+    else if (side === 2) { x = X0 + SIDE - ST - f2 * SIDE; z = Z0 + SIDE - ST; }
+    else { x = X0; z = Z0 + SIDE - ST - f2 * SIDE; }
+    B(x, z, ST, ST, 0, 0.5 * (k + 1), 'steel');
+  }
+  B(111.5, 111.5, 17, 17, 7.95, 8.55, 'steel');
+  B(119.5, 119.5, 1, 1, 17, 21.5, 'ink');
+  B(104, 60, 8, 24, 0, 8.55, 'ink');
+  B(128, 60, 8, 24, 0, 8.55, 'ink');
+  B(112, 69.7, 16, 2.6, 7.95, 8.55, 'ink');
+  stairs(112.15, 84.4, 3, 0.5, 1.15, 17, 3, 'slate');
+  stairs(124.85, 84.4, 3, 0.5, 1.15, 17, 3, 'slate');
+  B(104, 146, 8, 24, 0, 8.55, 'steel');
+  B(128, 146, 8, 24, 0, 8.55, 'steel');
+  B(112, 146.7, 16, 2.6, 7.95, 8.55, 'steel');
+  stairs(112.15, 169.6, 3, 0.5, 1.15, 17, 2, 'slate');
+  stairs(124.85, 169.6, 3, 0.5, 1.15, 17, 2, 'slate');
+  bridge(118.7, 128.5, 2.6, 18.2);
+  B(66, 100, 30, 30, 0, 8.55, 'navy');
+  stairs(67, 130.05, 3, 0.5, 1.15, 17, 3, 'slate');
+  bridge(96, 118.7, 15.5, 2.6);
+  B(20, 16, 34, 28, 0, 7.5, 'steel');
+  for (var s = 0; s < 14; s++) B(54.8, 16 + s * 2.3, 1.15, 2.2, 0, 0.55 * (s + 1), 'gray');
+  B(144, 106, 24, 26, 0, 8.55, 'ink');
+  bridge(128.5, 118.7, 15.5, 2.6);
+  B(146, 154, 68, 68, 0, 1.2, 'gray');
+  B(154, 162, 52, 52, 0, 2.4, 'slate');
+  B(162, 170, 36, 36, 0, 3.6, 'navy');
+  B(172, 180, 16, 16, 3.6, 4.7, 'ink');
+  stairs(206, 158, 3, 0.4, 1.15, 3, 1, 'slate', 1.2);
+  stairs(196, 184, 3, 0.37, 1.15, 3, 1, 'gray', 3.6);
+  var CRATES = [[104, 104], [136, 104], [104, 136], [136, 136], [117, 88], [123, 88],
+    [146, 140], [152, 140], [90, 114], [84, 124], [156, 114], [162, 124],
+    [180, 190], [60, 60], [70, 84], [40, 120], [200, 60], [210, 80]];
+  for (var c2 = 0; c2 < CRATES.length; c2++) B(CRATES[c2][0], CRATES[c2][1], 1.15, 1.15, 0, 1.15, c2 & 1 ? 'ink' : 'gray');
+}
+var SPAWNS = [[180, 188], [72, 200], [30, 164], [180, 56], [156, 80], [216, 28], [76, 36], [30, 80], [120, 40], [120, 200], [40, 120], [200, 120], [190, 210], [24, 226]];
+
+var GRES = 2, GN = 120;
+var floorG = new Float32Array(GN * GN);
+var flow = new Int16Array(GN * GN);
+var flowQ = new Int32Array(GN * GN);
+function buildNav() {
+  for (var b = 0; b < boxes.length; b++) {
+    var bo = boxes[b];
+    if (bo.y1 > 4.2) continue;
+    var cx0 = Math.max(0, bo.x0 / GRES | 0), cx1 = Math.min(GN - 1, bo.x1 / GRES | 0);
+    var cz0 = Math.max(0, bo.z0 / GRES | 0), cz1 = Math.min(GN - 1, bo.z1 / GRES | 0);
+    for (var gz = cz0; gz <= cz1; gz++)
+      for (var gx = cx0; gx <= cx1; gx++) {
+        var i = gz * GN + gx;
+        if (bo.y1 > floorG[i]) floorG[i] = bo.y1;
+      }
+  }
+}
+function cellFloor(gx, gz) { return (gx < 0 || gz < 0 || gx >= GN || gz >= GN) ? 99 : floorG[gz * GN + gx]; }
+function rebuildFlow(ppx, ppz) {
+  flow.fill(-1);
+  var sx = Math.max(0, Math.min(GN - 1, ppx / GRES | 0));
+  var sz = Math.max(0, Math.min(GN - 1, ppz / GRES | 0));
+  var head = 0, tail = 0;
+  flow[sz * GN + sx] = 0; flowQ[tail++] = sz * GN + sx;
+  while (head < tail) {
+    var i = flowQ[head++], gx = i % GN, gz = i / GN | 0, d = flow[i], f0 = floorG[i];
+    if (d > 250) continue;
+    for (var k = 0; k < 4; k++) {
+      var nx = gx + (k === 0 ? 1 : k === 1 ? -1 : 0);
+      var nz = gz + (k === 2 ? 1 : k === 3 ? -1 : 0);
+      if (nx < 0 || nz < 0 || nx >= GN || nz >= GN) continue;
+      var j = nz * GN + nx;
+      if (flow[j] >= 0) continue;
+      if (Math.abs(floorG[j] - f0) > 0.56) continue;
+      flow[j] = d + 1; flowQ[tail++] = j;
+    }
+  }
+}
+function flowDir(x, z) {
+  var gx = Math.max(0, Math.min(GN - 1, x / GRES | 0));
+  var gz = Math.max(0, Math.min(GN - 1, z / GRES | 0));
+  var d0 = flow[gz * GN + gx];
+  if (d0 < 0) return null;
+  var bx = 0, bz = 0, best = d0;
+  for (var k = 0; k < 4; k++) {
+    var nx = gx + (k === 0 ? 1 : k === 1 ? -1 : 0);
+    var nz = gz + (k === 2 ? 1 : k === 3 ? -1 : 0);
+    if (nx < 0 || nz < 0 || nx >= GN || nz >= GN) continue;
+    var d = flow[nz * GN + nx];
+    if (d >= 0 && d < best && Math.abs(floorG[nz * GN + nx] - floorG[gz * GN + gx]) <= 0.56) {
+      best = d; bx = nx - gx; bz = nz - gz;
+    }
+  }
+  if (!bx && !bz) return null;
+  return [bx, bz];
+}
+function groundY(x, z, fromY) {
+  var g = 0;
+  var lim = fromY + STEP;
+  for (var i = 0; i < boxes.length; i++) {
+    var b = boxes[i];
+    if (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1 && b.y1 <= lim && b.y1 > g) g = b.y1;
+  }
+  return g;
+}
+function moveXZ(e, dx, dz) {
+  if (dx) {
+    e.x += dx;
+    for (var i = 0; i < boxes.length; i++) {
+      var b = boxes[i];
+      if (e.x + e.r > b.x0 && e.x - e.r < b.x1 && e.z + e.r > b.z0 && e.z - e.r < b.z1 &&
+          b.y1 > e.y + 0.001 && b.y0 < e.y + e.h) {
+        if (b.y1 <= e.y + STEP) e.y = b.y1;
+        else e.x = dx > 0 ? b.x0 - e.r : b.x1 + e.r;
+      }
+    }
+  }
+  if (dz) {
+    e.z += dz;
+    for (var j = 0; j < boxes.length; j++) {
+      var b2 = boxes[j];
+      if (e.x + e.r > b2.x0 && e.x - e.r < b2.x1 && e.z + e.r > b2.z0 && e.z - e.r < b2.z1 &&
+          b2.y1 > e.y + 0.001 && b2.y0 < e.y + e.h) {
+        if (b2.y1 <= e.y + STEP) e.y = b2.y1;
+        else e.z = dz > 0 ? b2.z0 - e.r : b2.z1 + e.r;
+      }
+    }
+  }
+}
+function rayBox(ox, oy, oz, dx, dy, dz, b, tMax) {
+  var t0 = 0, t1 = tMax;
+  for (var a = 0; a < 3; a++) {
+    var o = a === 0 ? ox : a === 1 ? oy : oz;
+    var d = a === 0 ? dx : a === 1 ? dy : dz;
+    var lo = a === 0 ? b.x0 : a === 1 ? b.y0 : b.z0;
+    var hi = a === 0 ? b.x1 : a === 1 ? b.y1 : b.z1;
+    if (d > -1e-9 && d < 1e-9) { if (o < lo || o > hi) return -1; }
+    else {
+      var ta = (lo - o) / d, tb = (hi - o) / d;
+      if (ta > tb) { var s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+      if (t0 > t1) return -1;
+    }
+  }
+  return t0 > 0.001 ? t0 : -1;
+}
+function rayWorld(ox, oy, oz, dx, dy, dz, tMax) {
+  var best = tMax;
+  for (var i = 0; i < boxes.length; i++) {
+    var t = rayBox(ox, oy, oz, dx, dy, dz, boxes[i], best);
+    if (t > 0 && t < best) best = t;
+  }
+  return best;
+}
+function losClear(ax, ay, az, bx, by, bz) {
+  var dx = bx - ax, dy = by - ay, dz = bz - az;
+  var len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (len < 0.01) return true;
+  return rayWorld(ax, ay, az, dx / len, dy / len, dz / len, len - 0.05) >= len - 0.06;
+}
+function pointInBox(x, y, z) {
+  for (var i = 0; i < boxes.length; i++) {
+    var b = boxes[i];
+    if (x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1 && z > b.z0 && z < b.z1) return true;
+  }
+  return false;
+}
+/* —— 渲染 —— */
+var zbuf = new Float32Array(W * H);
+var camX = 0, camY = 0, camZ = 0;
+var fwdX = 0, fwdY = 0, fwdZ = 1, rgtX = 1, rgtY = 0, rgtZ = 0, upX = 0, upY = 1, upZ = 0;
+function setCam(x, y, z, yaw, pitch) {
+  camX = x; camY = y; camZ = z;
+  var cp = Math.cos(pitch), sp = Math.sin(pitch);
+  var cy = Math.cos(yaw), sy = Math.sin(yaw);
+  fwdX = sy * cp; fwdY = sp; fwdZ = cy * cp;
+  rgtX = cy; rgtY = 0; rgtZ = -sy;
+  upX = fwdY * rgtZ - fwdZ * rgtY;
+  upY = fwdZ * rgtX - fwdX * rgtZ;
+  upZ = fwdX * rgtY - fwdY * rgtX;
+}
+function toCam(x, y, z, out) {
+  var rx = x - camX, ry = y - camY, rz = z - camZ;
+  out[0] = rx * rgtX + ry * rgtY + rz * rgtZ;
+  out[1] = rx * upX + ry * upY + rz * upZ;
+  out[2] = rx * fwdX + ry * fwdY + rz * fwdZ;
+}
+function drawSky() {
+  var yaw = Math.atan2(fwdX, fwdZ);
+  var sd = angDiff(0.8, yaw);
+  if (Math.abs(sd) < 1.15) {
+    var sx = CX + Math.tan(sd) * F;
+    var sy = 28 - fwdY * 44;
+    for (var dy = -5; dy <= 5; dy++) for (var dx = -5; dx <= 5; dx++) {
+      var r2 = dx * dx + dy * dy;
+      if (r2 <= 30) R.pset((sx + dx) | 0, (sy + dy) | 0, r2 <= 14 ? P.ICE : P.HAZE);
+    }
+  }
+  for (var i = 0; i < 22; i++) {
+    var az = i * 0.53 + 0.31, el = 0.16 + (i * 0.371 % 1) * 0.5;
+    var d2 = angDiff(az, yaw);
+    if (Math.abs(d2) > 1.2) continue;
+    var cx2 = CX + Math.tan(d2) * F, cy2 = CY - F * el - fwdY * 44;
+    R.rect(cx2 | 0, cy2 | 0, 3, 1, i % 3 ? P.HAZE : P.ICE);
+    R.pset((cx2 + 1) | 0, (cy2 - 1) | 0, P.HAZE);
+  }
+}
+function angDiff(a, b) {
+  var d = (a - b) % 6.2832;
+  if (d > 3.1416) d -= 6.2832;
+  if (d < -3.1416) d += 6.2832;
+  return d;
+}
+function drawFloorRows() {
+  for (var y = 0; y < H; y++) {
+    var v = (CY - y) / F;
+    var dirY = fwdY + v * upY;
+    if (dirY >= -1e-6) continue;
+    var tt = camY / -dirY;
+    var row = y * W;
+    if (tt > 132) { R.rect(0, y, W, 1, P.SKY); zbuf.fill(tt, row, row + W); continue; }
+    var ax = camX + tt * (fwdX + v * upX);
+    var az = camZ + tt * (fwdZ + v * upZ);
+    var dx = tt / F * rgtX, dz = tt / F * rgtZ;
+    var wx = ax - dx * CX, wz = az - dz * CX;
+    var band = tt < 55 ? 0 : tt < 95 ? 1 : 2;
+    var k1 = band === 1 ? 0.75 - (tt - 55) * 0.01 : 0.6 - (tt - 95) * 0.011;
+    var by = (y & 3) * 4;
+    for (var x = 0; x < W; x++, wx += dx, wz += dz) {
+      var ci;
+      if (band === 0) {
+        var gx = wx % 8, gz = wz % 8;
+        if (gx < 0.22 || gx > 7.78 || gz < 0.22 || gz > 7.78) ci = P.GRID;
+        else if (Math.abs(wx - 120) < 7 || Math.abs(wz - 120) < 7) ci = P.HAZE;
+        else if (Math.abs(wx - 120) < 22 && Math.abs(wz - 120) < 22 && ((((wx / 4) | 0) + ((wz / 4) | 0)) & 1)) ci = P.GRID;
+        else ci = P.PAVE;
+      } else {
+        var th = (BAYER[by + (x & 3)] + 0.5) * 0.0625;
+        if (band === 1) ci = th < k1 ? P.PAVE : P.HAZE;
+        else ci = th < k1 ? P.HAZE : P.SKY;
+      }
+      R.pset(x, y, ci);
+      zbuf[row + x] = tt;
+    }
+  }
+}
+function faceCi(x, y, dep, mode) {
+  var th = (BAYER[((y & 3) << 2) + (x & 3)] + 0.5) * 0.0625;
+  var a, b, k;
+  if (dep < 60) {
+    if (mode === 1) { a = P.ICE; b = P.HAZE; k = 0.6; }
+    else if (mode === 2) { a = P.STEEL; b = P.LBLUE; k = 0.45; }
+    else { a = P.LBLUE; b = P.ICE; k = 0.62; }
+  } else if (dep < 95) {
+    if (mode === 1) { a = P.HAZE; b = P.SKY; k = 0.55; }
+    else if (mode === 2) { a = P.LBLUE; b = P.ICE; k = 0.5; }
+    else { a = P.ICE; b = P.HAZE; k = 0.55; }
+  } else {
+    if (mode === 1) { a = P.HAZE; b = P.SKY; k = 0.3; }
+    else if (mode === 2) { a = P.ICE; b = P.HAZE; k = 0.5; }
+    else { a = P.HAZE; b = P.SKY; k = 0.5; }
+  }
+  return th < k ? a : b;
+}
+var cA = [0, 0, 0], cB = [0, 0, 0], cC = [0, 0, 0], cD = [0, 0, 0];
+var poly = [];
+var pvx = new Float32Array(10), pvy = new Float32Array(10), pvz = new Float32Array(10);
+function face(x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, mode, ec) {
+  toCam(x0, y0, z0, cA); toCam(x1, y1, z1, cB);
+  toCam(x2, y2, z2, cC); toCam(x3, y3, z3, cD);
+  if (cA[2] < NEARZ && cB[2] < NEARZ && cC[2] < NEARZ && cD[2] < NEARZ) return;
+  if (cA[2] > 175 && cB[2] > 175 && cC[2] > 175 && cD[2] > 175) return;
+  poly.length = 0;
+  var src = [cA, cB, cC, cD];
+  for (var i = 0; i < 4; i++) {
+    var p = src[i], q = src[(i + 1) & 3];
+    var pin = p[2] >= NEARZ, qin = q[2] >= NEARZ;
+    if (pin) poly.push(p[0], p[1], p[2]);
+    if (pin !== qin) {
+      var k = (NEARZ - p[2]) / (q[2] - p[2]);
+      poly.push(p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k, NEARZ);
+    }
+  }
+  var n = poly.length / 3;
+  if (n < 3) return;
+  var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9, minZ = 1e9;
+  for (var j = 0; j < n; j++) {
+    var Xc = poly[j * 3], Yc = poly[j * 3 + 1], Zc = poly[j * 3 + 2];
+    pvx[j] = CX + F * Xc / Zc;
+    pvy[j] = CY - F * Yc / Zc;
+    pvz[j] = 1 / Zc;
+    if (pvx[j] < minX) minX = pvx[j];
+    if (pvx[j] > maxX) maxX = pvx[j];
+    if (pvy[j] < minY) minY = pvy[j];
+    if (pvy[j] > maxY) maxY = pvy[j];
+    if (Zc < minZ) minZ = Zc;
+  }
+  if (maxX < 0 || minX > W - 1 || maxY < 0 || minY > H - 1) return;
+  for (var t2 = 1; t2 < n - 1; t2++)
+    fillTri(pvx[0], pvy[0], pvz[0], pvx[t2], pvy[t2], pvz[t2], pvx[t2 + 1], pvy[t2 + 1], pvz[t2 + 1], mode);
+  if (ec >= 0 && minZ < 125) {
+    var ec2 = minZ < 55 ? ec : minZ < 95 ? P.NAVY : P.STEEL;
+    for (var e = 0; e < n; e++) {
+      var f2 = (e + 1) % n;
+      zlineScr(pvx[e], pvy[e], pvz[e], pvx[f2], pvy[f2], pvz[f2], ec2);
+    }
+  }
+}
+function fillTri(x0, y0, z0, x1, y1, z1, x2, y2, z2, mode) {
+  var ax = Math.max(0, Math.floor(Math.min(x0, x1, x2)));
+  var bx = Math.min(W - 1, Math.ceil(Math.max(x0, x1, x2)));
+  var ay = Math.max(0, Math.floor(Math.min(y0, y1, y2)));
+  var by = Math.min(H - 1, Math.ceil(Math.max(y0, y1, y2)));
+  if (ax > bx || ay > by) return;
+  var d = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+  if (Math.abs(d) < 1e-7) return;
+  var ia = 1 / d;
+  for (var y = ay; y <= by; y++) {
+    var row = y * W;
+    for (var x = ax; x <= bx; x++) {
+      var w0 = ((x1 - x) * (y2 - y) - (x2 - x) * (y1 - y)) * ia;
+      if (w0 < 0) continue;
+      var w1 = ((x2 - x) * (y0 - y) - (x0 - x) * (y2 - y)) * ia;
+      if (w1 < 0) continue;
+      var w2 = 1 - w0 - w1;
+      if (w2 < 0) continue;
+      var dep = 1 / (w0 * z0 + w1 * z1 + w2 * z2);
+      var i = row + x;
+      if (dep < zbuf[i]) {
+        zbuf[i] = dep;
+        R.pset(x, y, faceCi(x, y, dep, mode));
+      }
+    }
+  }
+}
+function zlineScr(x0, y0, iz0, x1, y1, iz1, ci) {
+  x0 |= 0; y0 |= 0; x1 |= 0; y1 |= 0;
+  var steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+  if (steps === 0 || steps > 300) return;
+  var sx = x1 > x0 ? 1 : -1, sy = y1 > y0 ? 1 : -1;
+  var dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  var err = dx + dy, x = x0, y = y0;
+  for (var s = 0; s <= steps; s++) {
+    var dep = 1 / (iz0 + (iz1 - iz0) * (s / steps));
+    if (x >= 0 && x < W && y >= 0 && y < H) {
+      var i = y * W + x;
+      if (dep < zbuf[i]) { zbuf[i] = dep; R.pset(x, y, ci); }
+    }
+    if (x === x1 && y === y1) break;
+    var e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x += sx; }
+    if (e2 <= dx) { err += dx; y += sy; }
+  }
+}
+function drawBoxes() {
+  var FAR = 165;
+  for (var i = 0; i < boxes.length; i++) {
+    var b = boxes[i];
+    var ddx = b.cx - camX, ddz = b.cz - camZ;
+    var rr = FAR + b.rr;
+    if (ddx * ddx + ddz * ddz > rr * rr) continue;
+    if (ddx * fwdX + ddz * fwdZ < -b.rr - 3) continue;
+    if (camY > b.y1)
+      face(b.x0, b.y1, b.z0, b.x1, b.y1, b.z0, b.x1, b.y1, b.z1, b.x0, b.y1, b.z1, 1, b.ed);
+    else if (camY < b.y0)
+      face(b.x0, b.y0, b.z0, b.x1, b.y0, b.z0, b.x1, b.y0, b.z1, b.x0, b.y0, b.z1, 2, -1);
+    if (camX > b.x1)
+      face(b.x1, b.y0, b.z0, b.x1, b.y1, b.z0, b.x1, b.y1, b.z1, b.x1, b.y0, b.z1, 0, b.ed);
+    else if (camX < b.x0)
+      face(b.x0, b.y0, b.z0, b.x0, b.y1, b.z0, b.x0, b.y1, b.z1, b.x0, b.y0, b.z1, 0, b.ed);
+    if (camZ > b.z1)
+      face(b.x0, b.y0, b.z1, b.x1, b.y0, b.z1, b.x1, b.y1, b.z1, b.x0, b.y1, b.z1, 0, b.ed);
+    else if (camZ < b.z0)
+      face(b.x0, b.y0, b.z0, b.x1, b.y0, b.z0, b.x1, b.y1, b.z0, b.x0, b.y1, b.z0, 0, b.ed);
+  }
+}
+function zrect(sx, sy, w, h, ci, dep) {
+  var x0 = Math.max(0, sx | 0), y0 = Math.max(0, sy | 0);
+  var x1 = Math.min(W, Math.ceil(sx + w)), y1 = Math.min(H, Math.ceil(sy + h));
+  for (var y = y0; y < y1; y++) {
+    var row = y * W;
+    for (var x = x0; x < x1; x++) {
+      var i = row + x;
+      if (dep < zbuf[i]) { zbuf[i] = dep; R.pset(x, y, ci); }
+    }
+  }
+}
+function zpx(sx, sy, ci, dep) {
+  var x = sx | 0, y = sy | 0;
+  if (x < 0 || x >= W || y < 0 || y >= H) return;
+  var i = y * W + x;
+  if (dep < zbuf[i]) { zbuf[i] = dep; R.pset(x, y, ci); }
+}
+var _s = [0, 0, 0], _c = [0, 0, 0];
+function zseg(ax, ay, az, bx, by, bz, ci) {
+  toCam(ax, ay, az, cA); toCam(bx, by, bz, cB);
+  var p = cA, q = cB;
+  if (p[2] < NEARZ && q[2] < NEARZ) return;
+  var pp, qq;
+  if (p[2] < NEARZ) {
+    var k = (NEARZ - p[2]) / (q[2] - p[2]);
+    pp = [p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k, NEARZ]; qq = q;
+  } else if (q[2] < NEARZ) {
+    var k2 = (NEARZ - q[2]) / (p[2] - q[2]);
+    qq = [q[0] + (p[0] - q[0]) * k2, q[1] + (p[1] - q[1]) * k2, NEARZ]; pp = p;
+  } else { pp = p; qq = q; }
+  zlineScr(CX + F * pp[0] / pp[2], CY - F * pp[1] / pp[2], 1 / pp[2],
+           CX + F * qq[0] / qq[2], CY - F * qq[1] / qq[2], 1 / qq[2], ci);
+}
+var ETYPES = {
+  stalker: { hp: 34, sp: 4.6, dmg: 10, r: 0.38, h: 1.7, w: 0.62, score: 100, main: P.AMBER, alt: P.YEL },
+  wasp: { hp: 26, sp: 4.2, dmg: 6, r: 0.34, h: 1.0, w: 0.9, score: 150, main: P.YEL, alt: P.GOLD },
+  sentry: { hp: 58, sp: 3.4, dmg: 9, r: 0.40, h: 1.8, w: 0.80, score: 200, main: P.ORANGE, alt: P.RORANGE },
+  brute: { hp: 260, sp: 2.1, dmg: 24, r: 0.62, h: 2.5, w: 1.5, score: 500, main: P.RED, alt: P.DRED }
+};
+var scene, paused;
+var player, enemies, eballs, parts, tracers;
+var wave, quota, spawned, spawnT, interT, clearPending;
+var score, kills, best;
+var recoil = 0, muzzleT = 0, spread = 0, pitchKick = 0;
+var fireCd = 0, bobT = 0, bobPh = 0, coyote = 0, jumpBuf = 0;
+var dmgT = 0, hitM = 0, hitKill = false, bannerT = 0, bannerSub = '';
+var lastHitT = 0, overT = 0, flowT = 0, t = 0;
+function makeEnemy(type, x, z, hpMul, dmgMul) {
+  var et = ETYPES[type];
+  return { t: type, x: x, z: z, y: 0, vy: 0, r: et.r, h: et.h, w: et.w,
+           hp: et.hp * hpMul, maxHp: et.hp * hpMul, dmg: et.dmg * dmgMul,
+           animT: (rng() * 60) | 0, seed: rng() * 6.28,
+           atkCd: 30 + (rng() * 40 | 0), los: false, losT: (rng() * 8) | 0,
+           flash: 0, dieT: 0, alive: true };
+}
+function resetRun() {
+  player = { x: 120, y: 1.6, z: 136, vx: 0, vy: 0, vz: 0, r: PR, h: PH, yaw: 3.1416, pitch: 0, hp: 100, maxHp: 100, grounded: true, turnVel: 0 };
+  enemies = []; eballs = []; parts = []; tracers = [];
+  wave = 0; score = 0; kills = 0;
+  clearPending = false; interT = 0;
+  recoil = 0; muzzleT = 0; spread = 0; fireCd = 0; pitchKick = 0;
+  dmgT = 0; hitM = 0; bannerT = 0; lastHitT = 999; overT = 0;
+  coyote = 0; jumpBuf = 0;
+  paused = false;
+  nextWave();
+  scene = 'play';
+}
+function nextWave() {
+  wave++;
+  quota = Math.min(48, 4 + wave * 4);
+  spawned = 0; spawnT = 40;
+  bannerT = 140; bannerSub = 'HOSTILES ' + quota;
+  rebuildFlow(player.x, player.z); flowT = 0;
+}
+function pickType(w) {
+  var r = rng();
+  if (w <= 1) return 'stalker';
+  if (w === 2) return r < 0.6 ? 'stalker' : 'wasp';
+  if (w <= 4) return r < 0.4 ? 'stalker' : r < 0.65 ? 'wasp' : 'sentry';
+  if (w <= 7) return r < 0.3 ? 'stalker' : r < 0.55 ? 'wasp' : r < 0.85 ? 'sentry' : 'brute';
+  return r < 0.24 ? 'stalker' : r < 0.48 ? 'wasp' : r < 0.78 ? 'sentry' : 'brute';
+}
+function spawnEnemy() {
+  var pt = null;
+  for (var tries = 0; tries < 8; tries++) {
+    var s = SPAWNS[(rng() * SPAWNS.length) | 0];
+    var d = Math.hypot(s[0] - player.x, s[1] - player.z);
+    if (d > 35 && d < 115) { pt = s; break; }
+    if (!pt) pt = s;
+  }
+  var hpMul = Math.min(3.2, 1 + 0.08 * (wave - 1));
+  var dmgMul = Math.min(2.4, 1 + 0.05 * (wave - 1));
+  var e = makeEnemy(pickType(wave), pt[0] + rng() * 4 - 2, pt[1] + rng() * 4 - 2, hpMul, dmgMul);
+  e.y = groundY(e.x, e.z, 4);
+  enemies.push(e);
+}
+function hurtPlayer(dmg) {
+  if (scene !== 'play' || player.hp <= 0) return;
+  player.hp -= dmg;
+  dmgT = 22; lastHitT = 0;
+  A.playSfx(3);
+  if (player.hp <= 0) {
+    player.hp = 0;
+    if (!best || wave > best.w || (wave === best.w && score > best.s)) best = { w: wave, s: score };
+    overT = 70;
+    for (var i = 0; i < 20; i++)
+      parts.push({ x: player.x, y: player.y + 1, z: player.z, vx: rng() * 6 - 3, vy: rng() * 4, vz: rng() * 6 - 3, life: 20 + rng() * 24 | 0, ci: [P.RED, P.ORANGE, P.WHITE][i % 3] });
+  }
+}
+function fireGun() {
+  fireCd = 7;
+  recoil = Math.min(7, recoil + 2.6);
+  muzzleT = 4;
+  spread = Math.min(0.05, spread + 0.007);
+  pitchKick = 0.012;
+  A.playSfx(6);
+  var yaw = player.yaw + (rng() * 2 * spread - spread);
+  var pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch + (rng() * 2 * spread - spread) * 0.7));
+  var cp = Math.cos(pitch);
+  var dx = Math.sin(yaw) * cp, dy = Math.sin(pitch), dz = Math.cos(yaw) * cp;
+  var ox = player.x, oy = player.y + EYE, oz = player.z;
+  var wallT = rayWorld(ox, oy, oz, dx, dy, dz, 200);
+  var hitE = null, hitT = wallT, head = false;
+  for (var i = 0; i < enemies.length; i++) {
+    var e = enemies[i];
+    if (!e.alive) continue;
+    var bb = { x0: e.x - e.r, x1: e.x + e.r, y0: e.y, y1: e.y + e.h, z0: e.z - e.r, z1: e.z + e.r };
+    var tt = rayBox(ox, oy, oz, dx, dy, dz, bb, hitT);
+    if (tt > 0 && tt < hitT) {
+      hitT = tt; hitE = e;
+      head = (oy + dy * tt) > e.y + e.h * 0.76;
+    }
+  }
+  var hx = ox + dx * hitT, hy = oy + dy * hitT, hz = oz + dz * hitT;
+  tracers.push({ x0: ox + Math.sin(player.yaw) * 0.4, y0: oy - 0.16, z0: oz + Math.cos(player.yaw) * 0.4, x1: hx, y1: hy, z1: hz, life: 3 });
+  if (hitE) {
+    hitE.hp -= head ? 16 : 9;
+    hitE.flash = 3;
+    hitM = 7; hitKill = false;
+    for (var p = 0; p < 3; p++)
+      parts.push({ x: hx, y: hy, z: hz, vx: rng() * 4 - 2, vy: rng() * 3, vz: rng() * 4 - 2, life: 6 + rng() * 8 | 0, ci: p & 1 ? ETYPES[hitE.t].main : P.YEL });
+    if (hitE.hp <= 0 && hitE.alive) {
+      hitE.alive = false; hitE.dieT = 12;
+      hitM = 12; hitKill = true;
+      kills++;
+      score += Math.round(ETYPES[hitE.t].score * (1 + 0.06 * (wave - 1)));
+      var big = hitE.t === 'brute';
+      for (var q = 0; q < (big ? 20 : 10); q++)
+        parts.push({ x: hitE.x, y: hitE.y + hitE.h / 2, z: hitE.z, vx: rng() * 8 - 4, vy: 1 + rng() * 5, vz: rng() * 8 - 4, life: 14 + rng() * 16 | 0, ci: [ETYPES[hitE.t].main, ETYPES[hitE.t].alt, P.YEL, P.WHITE][q % 4] });
+      A.playSfx(4);
+    }
+  } else {
+    for (var w = 0; w < 3; w++)
+      parts.push({ x: hx - dx * 0.1, y: hy - dy * 0.1, z: hz - dz * 0.1, vx: rng() * 3 - 1.5, vy: rng() * 2, vz: rng() * 3 - 1.5, life: 5 + rng() * 5 | 0, ci: w & 1 ? P.WHITE : P.GRAY });
+  }
+}
+function updatePlay() {
+  // 视角:鼠标绝对偏移转向
+  var turned = 0;
+  var mOffX = mouse.x - CX, mOffY = mouse.y - CY;
+  if (Math.abs(mOffX) > 6) { player.yaw += Math.max(-6, Math.min(6, mOffX * 0.06)) * 0.045; turned = mOffX; }
+  if (Math.abs(mOffY) > 6) player.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch - Math.max(-6, Math.min(6, mOffY * 0.06)) * 0.03));
+  if (pad.left.down || pad.right.down || pad.up.down || pad.down.down) {
+    // 键盘转向:左右键水平转
+    if (pad.left.down) { player.yaw -= 0.052; turned = -8; }
+    if (pad.right.down) { player.yaw += 0.052; turned = 8; }
+  }
+  if (pitchKick) {
+    player.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch + pitchKick));
+    pitchKick *= 0.5;
+    if (pitchKick < 0.001) pitchKick = 0;
+  }
+  player.turnVel += (turned - player.turnVel) * 0.3;
+  // 移动(AC1 左右反移在此修正:右键向右平移)
+  var fx0 = Math.sin(player.yaw), fz0 = Math.cos(player.yaw);
+  var mx = 0, mz = 0;
+  var upK = pad.up.down || mouse.left && false;
+  if (pad.up.down) { mx += fx0; mz += fz0; }
+  if (pad.down.down) { mx -= fx0; mz -= fz0; }
+  var strafe = 0;
+  if (pad.a.down) strafe += 1;       // A/Z = 右平移(修正后)
+  if (pad.b.down) strafe -= 1;       // B/X = 左平移?——B 同时是跳。
+  // 跳跃绑定 B(按下沿);平移用 A/B 不行(B=跳)→ 平移改为:W 上 S 下 + 左右键转向 + 鼠标水平偏移平移?
+  // 最终方案:方向键/WASD 前后,左右平移 = A(右)/B 不用 —— 为保双手布局:A=右平移,B=跳跃。
+  mx += fz0 * strafe; mz -= fx0 * strafe;
+  var ml = Math.hypot(mx, mz);
+  if (ml > 0) { mx = mx / ml * 5.6; mz = mz / ml * 5.6; }
+  var acc = player.grounded ? 0.22 : 0.05;
+  player.vx += (mx - player.vx) * acc;
+  player.vz += (mz - player.vz) * acc;
+  if (ml > 0 && player.grounded) bobT += 0.22;
+  if (pad.b.pressed) jumpBuf = 7;
+  if (jumpBuf > 0) jumpBuf--;
+  if (player.grounded) coyote = 7; else if (coyote > 0) coyote--;
+  if (jumpBuf > 0 && coyote > 0) { player.vy = JUMP_V; player.grounded = false; coyote = 0; jumpBuf = 0; A.playSfx(1); }
+  player.vy -= GRAV / 60;
+  if (player.vy < -22) player.vy = -22;
+  var wasGrounded = player.grounded, fallV = player.vy;
+  moveXZ(player, player.vx / 60, 0);
+  moveXZ(player, 0, player.vz / 60);
+  player.y += player.vy / 60;
+  if (player.vy > 0)
+    for (var bi = 0; bi < boxes.length; bi++) {
+      var b = boxes[bi];
+      if (player.x + PR > b.x0 && player.x - PR < b.x1 && player.z + PR > b.z0 &&
+          player.z - PR < b.z1 && b.y0 > player.y + 0.1 && b.y0 < player.y + PH) {
+        player.y = b.y0 - PH; player.vy = 0;
+      }
+    }
+  var sup = groundY(player.x, player.z, player.y);
+  player.grounded = false;
+  if (player.vy <= 0 && player.y <= sup + 0.001) {
+    player.y = sup; player.vy = 0; player.grounded = true;
+    if (!wasGrounded && fallV < -7) bobPh = 4;
+  } else if (wasGrounded && player.y - sup <= STEP && player.vy <= 0) {
+    player.y = sup; player.grounded = true;
+  }
+  player.x = Math.max(4, Math.min(236, player.x));
+  player.z = Math.max(4, Math.min(236, player.z));
+  if (fireCd > 0) fireCd--;
+  if (mouse.left && fireCd <= 0) fireGun();
+  recoil *= 0.82;
+  if (muzzleT > 0) muzzleT--;
+  spread = Math.max(0.011, spread * 0.94);
+  if (ml > 0 && player.grounded) spread = Math.min(0.05, spread + 0.0004);
+  if (player.hp <= 0) {
+    overT--;
+    updateFx();
+    if (overT <= 0) scene = 'over';
+    return;
+  }
+  if (clearPending) {
+    interT--;
+    if (interT <= 0) { clearPending = false; nextWave(); }
+  } else {
+    var alive = 0;
+    for (var a = 0; a < enemies.length; a++) if (enemies[a].alive) alive++;
+    if (spawned < quota && alive < Math.min(12, 5 + wave)) {
+      if (--spawnT <= 0) { spawnT = Math.max(16, 46 - wave * 2); spawnEnemy(); spawned++; }
+    } else if (spawned >= quota && alive === 0) {
+      clearPending = true; interT = 190;
+      player.hp = Math.min(player.maxHp, player.hp + 30);
+      score += wave * 100;
+      bannerT = 130; bannerSub = 'AREA SECURED +' + wave * 100;
+      if (!best || wave > best.w) best = { w: wave, s: score };
+      A.playSfx(5);
+    }
+  }
+  if (++flowT >= 22) { flowT = 0; rebuildFlow(player.x, player.z); }
+  updateEnemies();
+  updateFx();
+  lastHitT++;
+  if (lastHitT > 240 && player.hp > 0 && player.hp < player.maxHp)
+    player.hp = Math.min(player.maxHp, player.hp + 0.22);
+  if (dmgT > 0) dmgT--;
+  if (hitM > 0) hitM--;
+  if (bannerT > 0) bannerT--;
+  if (bobPh > 0) bobPh--;
+  if (parts.length > 60) parts.splice(0, parts.length - 60);
+}
+function updateEnemies() {
+  var ppx = player.x, ppy = player.y, ppz = player.z;
+  for (var i = 0; i < enemies.length; i++) {
+    var a = enemies[i];
+    if (!a.alive) continue;
+    for (var j = i + 1; j < enemies.length; j++) {
+      var b = enemies[j];
+      if (!b.alive) continue;
+      var ddx = b.x - a.x, ddz = b.z - a.z;
+      var d2 = ddx * ddx + ddz * ddz, rr = a.r + b.r + 0.25;
+      if (d2 < rr * rr && d2 > 1e-6) {
+        var d = Math.sqrt(d2), push = (rr - d) * 0.5 / d;
+        a.x -= ddx * push; a.z -= ddz * push;
+        b.x += ddx * push; b.z += ddz * push;
+      }
+    }
+  }
+  for (var k = enemies.length - 1; k >= 0; k--) {
+    var e = enemies[k];
+    e.animT++;
+    if (e.flash > 0) e.flash--;
+    if (!e.alive) { if (--e.dieT <= 0) enemies.splice(k, 1); continue; }
+    var et = ETYPES[e.t];
+    var dx = ppx - e.x, dz = ppz - e.z;
+    var dist = Math.hypot(dx, dz);
+    if (--e.losT <= 0) {
+      e.losT = 8;
+      e.los = dist < 48 && losClear(e.x, e.y + e.h * 0.8, e.z, ppx, ppy + EYE - 0.2, ppz);
+    }
+    var vx = 0, vz = 0;
+    var ndx = dist > 0.01 ? dx / dist : 0, ndz = dist > 0.01 ? dz / dist : 0;
+    if (e.t === 'stalker' || e.t === 'brute') {
+      if (e.los && dist < 40) { vx = ndx * et.sp; vz = ndz * et.sp; }
+      else { var f = flowDir(e.x, e.z); if (f) { vx = f[0] * et.sp; vz = f[1] * et.sp; } }
+      if (dist < e.r + PR + 0.5 + (e.t === 'brute' ? 0.2 : 0) && Math.abs(e.y - ppy) < 2.5 && --e.atkCd <= 0) {
+        e.atkCd = e.t === 'brute' ? 66 : 48;
+        hurtPlayer(e.dmg);
+      }
+    } else if (e.t === 'sentry') {
+      if (e.los && dist < 30) {
+        var want = dist > 17 ? 1 : dist < 10 ? -0.8 : 0;
+        var strafe2 = Math.sin(e.animT * 0.02 + e.seed);
+        vx = (ndx * want - ndz * strafe2 * 0.7) * et.sp;
+        vz = (ndz * want + ndx * strafe2 * 0.7) * et.sp;
+        if (--e.atkCd <= 0) {
+          e.atkCd = 86 + (rng() * 30 | 0);
+          var ex = e.x, ey = e.y + e.h * 0.8, ez = e.z;
+          var ddx2 = ppx + player.vx * 0.18 - ex, ddy2 = ppy + EYE - 0.3 - ey, ddz2 = ppz + player.vz * 0.18 - ez;
+          var L = Math.hypot(ddx2, ddy2, ddz2) || 1;
+          eballs.push({ x: ex, y: ey, z: ez, vx: ddx2 / L * 15, vy: ddy2 / L * 15, vz: ddz2 / L * 15, dmg: e.dmg, r: 0.16, ci: P.ORANGE });
+        }
+      } else { var f2 = flowDir(e.x, e.z); if (f2) { vx = f2[0] * et.sp; vz = f2[1] * et.sp; } }
+    } else {
+      var targetY = e.los ? ppy + 2.5 : groundY(e.x, e.z, e.y + 1) + 2.3;
+      e.y += Math.max(-0.1, Math.min(0.1, targetY - e.y));
+      if (e.los && dist < 34) {
+        var orb = Math.sin(e.animT * 0.013 + e.seed) * 0.9;
+        vx = (ndx + ndz * orb) * et.sp; vz = (ndz - ndx * orb) * et.sp;
+        if (dist < 6) { vx -= ndx * et.sp * 0.9; vz -= ndz * et.sp * 0.9; }
+        if (--e.atkCd <= 0) {
+          e.atkCd = 64 + (rng() * 24 | 0);
+          var ex2 = e.x, ey2 = e.y + e.h * 0.5, ez2 = e.z;
+          var ddx3 = ppx - ex2, ddy3 = ppy + EYE - 0.4 - ey2, ddz3 = ppz - ez2;
+          var L2 = Math.hypot(ddx3, ddy3, ddz3) || 1;
+          eballs.push({ x: ex2, y: ey2, z: ez2, vx: ddx3 / L2 * 13, vy: ddy3 / L2 * 13, vz: ddz3 / L2 * 13, dmg: e.dmg, r: 0.12, ci: P.YEL });
+        }
+      } else {
+        var f3 = flowDir(e.x, e.z);
+        if (f3) { vx = f3[0] * et.sp; vz = f3[1] * et.sp; }
+      }
+    }
+    moveXZ(e, vx / 60, vz / 60);
+    if (e.t !== 'wasp') {
+      var g = groundY(e.x, e.z, e.y);
+      if (Math.abs(g - e.y) <= 1.2) e.y += (g - e.y) * 0.35;
+    }
+    var pd = Math.hypot(ppx - e.x, ppz - e.z);
+    if (pd < e.r + PR && pd > 0.01) {
+      var push2 = (e.r + PR - pd) / pd;
+      e.x -= (ppx - e.x) * push2; e.z -= (ppz - e.z) * push2;
+    }
+  }
+  for (var eb = eballs.length - 1; eb >= 0; eb--) {
+    var b2 = eballs[eb];
+    b2.x += b2.vx / 60; b2.y += b2.vy / 60; b2.z += b2.vz / 60;
+    var dead = --b2.life <= 0;
+    if (!dead && pointInBox(b2.x, b2.y, b2.z)) dead = true;
+    if (!dead && scene === 'play' &&
+        Math.abs(b2.x - player.x) < PR + b2.r && Math.abs(b2.z - player.z) < PR + b2.r &&
+        b2.y > player.y && b2.y < player.y + PH) {
+      hurtPlayer(b2.dmg);
+      dead = true;
+    }
+    if (dead) eballs.splice(eb, 1);
+  }
+}
+function updateFx() {
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx / 60; p.y += p.vy / 60; p.z += p.vz / 60;
+    p.vy -= 8 / 60;
+    if (p.y < 0.02) { p.y = 0.02; p.vy *= -0.3; p.vx *= 0.6; p.vz *= 0.6; }
+    if (--p.life <= 0) parts.splice(i, 1);
+  }
+  for (var j = tracers.length - 1; j >= 0; j--) if (--tracers[j].life <= 0) tracers.splice(j, 1);
+}
+function doUpdate() {
+  t++;
+  if (scene === 'title' || scene === 'over') {
+    if (pad.start.pressed || pad.a.pressed) resetRun();
+    return;
+  }
+  if (pad.start.pressed) paused = !paused;
+  if (paused) return;
+  updatePlay();
+}
+function drawEnemy(e) {
+  toCam(e.x, e.y + e.h * 0.5, e.z, _c);
+  var Zc = _c[2];
+  if (Zc < NEARZ + 0.2 || Zc > 128) return;
+  var fg = Zc < 60 ? 0 : Zc < 95 ? 1 : 2;
+  toCam(e.x, e.y, e.z, _s);
+  var fx = CX + F * _s[0] / Zc, fy = CY - F * _s[1] / Zc;
+  var k = F / Zc;
+  var bw = e.w * k, bh = e.h * k;
+  if (bh < 2.5) { zpx(fx, fy - 1, e.t === 'brute' ? P.RED : P.ORANGE, Zc); return; }
+  var x0 = fx - bw / 2, y0 = fy - bh;
+  var main = ETYPES[e.t].main, alt = ETYPES[e.t].alt;
+  if (fg === 2) { main = alt = P.HAZE; }
+  if (e.flash > 0) { main = alt = P.WHITE; }
+  var dep = Zc - 0.05;
+  if (!e.alive) {
+    var q = e.dieT / 12;
+    zrect(x0 - 1, fy - bh * 0.3 * q - 1, bw + 2, bh * 0.3 * q + 2, P.INKB, dep);
+    zrect(x0, fy - bh * 0.28 * q, bw, bh * 0.28 * q, alt, dep);
+    return;
+  }
+  zrect(x0 - 1, y0 - 1, bw + 2, bh + 2, P.INKB, dep);
+  var legW = Math.max(1, bw * 0.26), legH = bh * 0.34;
+  if (e.t === 'wasp') {
+    zrect(x0, y0 + bh * 0.25, bw, bh * 0.5, main, dep);
+    zrect(x0 + bw * 0.22, y0 + bh * 0.4, bw * 0.56, bh * 0.2, P.WHITE, dep);
+    var th = e.animT % 12 < 6 ? 0 : 1;
+    zrect(x0 + bw * 0.3, y0 + bh * 0.78, bw * 0.4, bh * 0.2 + th, alt, dep);
+    zpx(x0 + bw * 0.2, y0 + bh * 0.2, P.WHITE, dep);
+    zpx(x0 + bw * 0.8, y0 + bh * 0.2, P.WHITE, dep);
+  } else {
+    var ph = (e.animT >> 3) & 1;
+    zrect(x0 + bw * 0.12, fy - legH, legW, legH - ph, alt, dep);
+    zrect(x0 + bw * 0.62, fy - legH, legW, legH - (1 - ph), alt, dep);
+    zrect(x0, y0 + bh * 0.3, bw, bh * 0.42, main, dep);
+    zrect(x0 + bw * 0.1, y0 + bh * 0.3, bw * 0.8, bh * 0.1, alt, dep);
+    zrect(x0 + bw * 0.24, y0, bw * 0.52, bh * 0.2, main, dep);
+    if (e.animT % 44 < 30) {
+      zpx(x0 + bw * 0.34, y0 + bh * 0.08, fg === 2 ? P.HAZE : P.YEL, dep);
+      zpx(x0 + bw * 0.62, y0 + bh * 0.08, fg === 2 ? P.HAZE : P.YEL, dep);
+    }
+    if (e.t === 'sentry') zrect(x0 + bw * 0.7, y0 + bh * 0.44, bw * 0.5, Math.max(1, bh * 0.08), P.INKB, dep);
+    if (e.t === 'brute') {
+      zrect(x0 - 1, y0 + bh * 0.3, bw * 0.24, bh * 0.24, alt, dep);
+      zrect(x0 + bw * 0.77, y0 + bh * 0.3, bw * 0.24, bh * 0.24, alt, dep);
+    }
+  }
+}
+function renderWorld() {
+  R.clear(P.SKY);
+  drawSky();
+  zbuf.fill(1e9);
+  drawFloorRows();
+  drawBoxes();
+  for (var i = 0; i < tracers.length; i++)
+    zseg(tracers[i].x0, tracers[i].y0, tracers[i].z0, tracers[i].x1, tracers[i].y1, tracers[i].z1, tracers[i].life === 3 ? P.WHITE : P.GOLD);
+  for (var e = 0; e < enemies.length; e++) drawEnemy(enemies[e]);
+  for (var b = 0; b < eballs.length; b++) {
+    toCam(eballs[b].x, eballs[b].y, eballs[b].z, _c);
+    if (_c[2] < NEARZ + 0.2 || _c[2] > 128) continue;
+    var k = F / _c[2];
+    var sx = CX + F * _c[0] / _c[2], sy = CY - F * _c[1] / _c[2];
+    var s = Math.max(1.5, eballs[b].r * 2 * k);
+    zrect(sx - s / 2, sy - s / 2, s, s, eballs[b].ci, _c[2] - 0.05);
+    zpx(sx, sy, P.WHITE, _c[2] - 0.06);
+  }
+  for (var p = 0; p < parts.length; p++) {
+    toCam(parts[p].x, parts[p].y, parts[p].z, _c);
+    if (_c[2] < NEARZ + 0.1 || _c[2] > 90) continue;
+    zpx(CX + F * _c[0] / _c[2], CY - F * _c[1] / _c[2], parts[p].ci, _c[2] - 0.03);
+  }
+}
+function drawGun() {
+  var bob = Math.sin(bobT) * 1.4;
+  var bobX = Math.cos(bobT * 0.5) * 1.1;
+  var gx = Math.round(W * 0.6 + bobX - player.turnVel * 0.8);
+  var gy = Math.round(H - 3 + recoil * 1.7 + bob + bobPh);
+  R.rect(gx, gy - 15, 26, 8, P.DGRAY);
+  R.rect(gx + 26, gy - 13, 17, 4, P.INKB);
+  R.rect(gx + 43, gy - 14, 4, 6, P.INKB);
+  R.rect(gx + 6, gy - 7, 7, 9, P.GRAY);
+  R.rect(gx + 17, gy - 7, 8, 6, P.STEEL);
+  R.rect(gx + 2, gy - 18, 10, 3, P.INKB);
+  R.rect(gx + 36, gy - 16, 2, 3, P.INKB);
+  R.rect(gx + 23, gy - 13, 2, 2, P.CYAN);
+  if (muzzleT > 0) {
+    var mx = gx + 47, my = gy - 11, r = muzzleT;
+    R.rect(mx - 2, my - 5 - r, 4, 3 + r, P.WHITE);
+    R.rect(mx - 5 - r, my - 2, 3 + r, 4, P.GOLD);
+    R.rect(mx + 2, my - 2, 3 + r, 4, P.GOLD);
+    R.rect(mx - 1, my - 1, 3, 3, P.WHITE);
+  }
+}
+function drawHud() {
+  bios.text(4, 2, 'WAVE ' + wave, { color: P.BLACK });
+  var alive = 0;
+  for (var i = 0; i < enemies.length; i++) if (enemies[i].alive) alive++;
+  bios.text(4, 16, clearPending ? 'CLEAR' : 'FOES ' + alive, { color: P.DRED });
+  bios.text(4, 30, '' + score, { color: P.INKB });
+  bios.text(4, H - 24, 'HP', { color: P.BLACK });
+  R.rect(28, H - 22, 48, 8, P.BLACK);
+  R.rect(29, H - 21, 46, 6, P.WHITE);
+  R.rect(29, H - 21, Math.round(46 * Math.max(0, player.hp) / player.maxHp), 6, player.hp > 30 ? P.RED : P.DRED);
+  bios.text(180, H - 24, 'INFINITE', { color: P.INKB });
+  // 准星
+  var g = 3 + Math.round(spread * 800);
+  R.line(CX, CY - g - 3, CX, CY - g, P.BLACK, 1);
+  R.line(CX, CY + g, CX, CY + g + 3, P.BLACK, 1);
+  R.line(CX - g - 3, CY, CX - g, CY, P.BLACK, 1);
+  R.line(CX + g, CY, CX + g + 3, CY, P.BLACK, 1);
+  R.pset(CX, CY, P.BLACK);
+  if (hitM > 0) {
+    var ci = hitKill ? P.RED : P.WHITE;
+    var s2 = hitKill ? 5 : 4;
+    R.line(CX - 2, CY - 2, CX - s2, CY - s2, ci, 1);
+    R.line(CX + 2, CY - 2, CX + s2, CY - s2, ci, 1);
+    R.line(CX - 2, CY + 2, CX - s2, CY + s2, ci, 1);
+    R.line(CX + 2, CY + 2, CX + s2, CY + s2, ci, 1);
+  }
+  if (dmgT > 0) {
+    var th = Math.min(5, dmgT >> 2) + 1;
+    R.rect(0, 0, W, th, P.RED); R.rect(0, H - th, W, th, P.RED);
+    R.rect(0, 0, th, H, P.RED); R.rect(W - th, 0, th, H, P.RED);
+  }
+  if (bannerT > 0 && (bannerT > 16 || (t % 4) < 2)) {
+    bios.text((240 - ('WAVE ' + wave).length * 24) / 2 | 0, 33, 'WAVE ' + wave, { color: P.BLACK, scale: 2 });
+    bios.text((240 - bannerSub.length * 12) / 2 | 0, 52, bannerSub, { color: P.DRED });
+  }
+  if (clearPending && interT > 0)
+    bios.text(66, 2, 'NEXT ' + Math.ceil(interT / 60), { color: P.BLACK });
+  if (player.hp <= 0 && scene === 'play')
+    bios.text(66, 66, 'SIGNAL LOST', { color: P.RED, scale: 2 });
+}
+function draw() {
+  if (scene === 'title') {
+    var a = t * 0.004, R2 = 64;
+    var cx = 120 + Math.cos(a) * R2, cz = 120 + Math.sin(a) * R2;
+    setCam(cx, 15, cz, Math.atan2(120 - cx, 120 - cz), -0.13);
+    renderWorld();
+    bios.text(60, 12, 'PALE CITADEL', { color: P.RED, scale: 2 });
+    bios.text(66, 36, '3D WAVE SHOOTER', { color: P.INKB });
+    if (best) bios.text(48, 50, 'BEST W' + best.w + ' ' + best.s, { color: P.GOLD });
+    if ((t % 60) < 38) bios.text(66, 74, 'PRESS START', { color: P.BLACK, scale: 2 });
+    bios.text(30, 100, 'WASD MOVE MOUSE AIM LMB FIRE', { color: P.DGRAY });
+    bios.text(54, 112, 'B JUMP ENTER PAUSE', { color: P.DGRAY });
+    bios.text(36, 124, 'MOUSE HORIZON TURNS VIEW', { color: P.DGRAY });
+    bios.text(48, 136, 'INFINITE AMMO HOLD LINE', { color: P.DRED });
+    return;
+  }
+  setCam(player.x, player.y + EYE, player.z, player.yaw, player.pitch);
+  renderWorld();
+  drawGun();
+  drawHud();
+  if (scene === 'over') {
+    bios.text(72, 42, 'GAME OVER', { color: P.RED, scale: 2 });
+    bios.text(66, 70, 'REACHED WAVE ' + wave, { color: P.INKB });
+    bios.text(72, 84, 'KILLS ' + kills, { color: P.INKB });
+    bios.text(66, 98, 'SCORE ' + score, { color: P.INKB });
+    if (best) bios.text(72, 112, 'BEST W' + best.w, { color: P.GOLD });
+    if ((t % 60) < 38) bios.text(54, 128, 'PRESS START REDEPLOY', { color: P.BLACK });
+  }
+  if (paused) {
+    bios.text(90, 76, 'PAUSED', { color: P.BLACK, scale: 2 });
+    bios.text(78, 94, 'ENTER TO RESUME', { color: P.INKB });
+  }
+}
+function init() {
+  boxes.length = 0;
+  buildMap();
+  buildNav();
+  enemies = []; eballs = []; parts = []; tracers = [];
+  scene = 'title'; paused = false;
+  player = { x: 120, y: 1.6, z: 136, vx: 0, vy: 0, vz: 0, r: PR, h: PH, yaw: 3.1416, pitch: 0, hp: 100, maxHp: 100, grounded: true, turnVel: 0 };
+  wave = 1; score = 0; kills = 0;
+  bannerT = 0; dmgT = 0; hitM = 0; overT = 0;
+  best = null;
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

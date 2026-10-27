@@ -1,0 +1,653 @@
+/* carts/vampire/main.ajs — NIGHT SURVIVOR(AC1 移植 · 模式1)
+ * 无限地面走 BG 循环棋盘地图;玩家/敌群/子弹/宝石/宝箱走 OAM(敌上限 60,精灵预算内)。
+ * 5 武器 7 被动/升级三选一/Boss 过关照搬 AC1。240×176。
+ */
+var D = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+var P = D.P, T = D.T, HERO = D.HERO, BAT = D.BAT, ZOMBIE = D.ZOMBIE, GHOST = D.GHOST, SPIT = D.SPIT, BRUTE = D.BRUTE;
+var BOSS = D.BOSS, GEM_S = D.GEM_S, GEM_L = D.GEM_L, HEART = D.HEART, MAGNET = D.MAGNET, CHEST = D.CHEST;
+var BULLET = D.BULLET, EBULLET = D.EBULLET, DOT = D.DOT, ORB = D.ORB;
+
+var W = 240, H = 176, HUD = 14;
+var ETILES = { bat: BAT, zombie: ZOMBIE, ghost: GHOST, spitter: SPIT, brute: BRUTE };
+
+var WEAPONS = {
+  wand: { name: 'MAGIC WAND', d1: 'AUTO SHOTS AT THE', d2: 'NEAREST FOE', max: 5, dmg: [5, 7, 9, 12, 16], cd: [42, 38, 34, 30, 26], cnt: [1, 1, 2, 2, 3], pier: [1, 1, 1, 2, 2] },
+  knife: { name: 'THROW KNIVES', d1: 'FAST BLADES FIRED', d2: 'AHEAD OF YOU', max: 5, dmg: [4, 6, 8, 11, 15], cd: [32, 29, 26, 23, 20], cnt: [1, 2, 2, 3, 4], pier: [1, 1, 2, 2, 3] },
+  aura: { name: 'HOLY AURA', d1: 'BURNS AND PUSHES', d2: 'ALL NEARBY', max: 5, dmg: [1, 2, 3, 4, 6], rad: [26, 30, 34, 38, 44] },
+  orb: { name: 'MOON ORBS', d1: 'ORBITING STARS', d2: 'HIT ON CONTACT', max: 5, dmg: [4, 6, 8, 12, 16], cnt: [1, 2, 3, 3, 4] },
+  bolt: { name: 'THUNDER', d1: 'SMITES RANDOM FOES', d2: 'ON SCREEN', max: 5, dmg: [12, 18, 26, 36, 50], cd: [140, 124, 108, 92, 76], cnt: [1, 2, 3, 4, 6] }
+};
+var PASSIVES = {
+  boots: { name: 'HERO BOOTS', d1: 'MOVE SPEED UP', d2: '', max: 3 },
+  heart: { name: 'IRON HEART', d1: 'MAX HP UP AND', d2: 'HEALS A BIT', max: 3 },
+  regen: { name: 'MOON RING', d1: 'SLOWLY REGENERATE', d2: 'HP OVER TIME', max: 3 },
+  magnet: { name: 'LODESTONE', d1: 'WIDER PICKUP', d2: 'RANGE', max: 3 },
+  armor: { name: 'STEEL PLATE', d1: 'REDUCES THE DAMAGE', d2: 'OF EACH HIT', max: 3 },
+  might: { name: 'POWER GEM', d1: 'ALL WEAPON', d2: 'DAMAGE UP', max: 3 },
+  haste: { name: 'SWIFT SIGIL', d1: 'WEAPON COOLDOWN', d2: 'DOWN', max: 3 }
+};
+var ETYPES = {
+  bat: { r: 2.5, sp: 1.0, hp: 4, dmg: 3, xp: 1, ci: P.VIOLET },
+  zombie: { r: 3.5, sp: 0.42, hp: 14, dmg: 6, xp: 2, ci: P.GREEN },
+  ghost: { r: 2.5, sp: 0.7, hp: 8, dmg: 4, xp: 2, ci: P.ICE },
+  spitter: { r: 3.5, sp: 0.55, hp: 10, dmg: 4, xp: 3, ci: P.PINK },
+  brute: { r: 5, sp: 0.3, hp: 44, dmg: 12, xp: 6, ci: P.RED }
+};
+var STAGES = [
+  { name: 'CRIMSON FIELD', dur: 110, mix: ['bat', 'bat', 'zombie'], elite: 40, g1: 0, g2: 1 },
+  { name: 'OLD GRAVEYARD', dur: 120, mix: ['bat', 'zombie', 'ghost'], elite: 36, g1: 1, g2: 2 },
+  { name: 'ROT GARDEN', dur: 130, mix: ['zombie', 'ghost', 'spitter'], elite: 34, g1: 0, g2: 1 },
+  { name: 'ABYSS GATE', dur: 140, mix: ['bat', 'ghost', 'spitter', 'brute'], elite: 32, g1: 1, g2: 0 }
+];
+function stageCfg(i) {
+  if (i < STAGES.length) return STAGES[i];
+  return { name: 'ENDLESS ' + (i - 3), dur: 150, mix: ['bat', 'zombie', 'ghost', 'spitter', 'brute'], elite: 28, g1: 1, g2: 0 };
+}
+var E_CAP = 56, GEM_CAP = 26, PARTS_CAP = 14;
+
+var scene, paused;
+var player, weapons, plv, mightMul, hasteMul;
+var enemies, bullets, ebullets, gems, pickups, parts, floats, bolts, orbPos;
+var stageIdx, cfg, stageT, totalT, bossOn, boss, warnT, bannerT, clearT;
+var kills, levelQueue, choices, sel, spawnT, burstT, eliteT, best, t = 0;
+
+function mmss(fr) {
+  var s = Math.floor(fr / 60);
+  return ('0' + Math.floor(s / 60)).slice(-2) + ':' + ('0' + (s % 60)).slice(-2);
+}
+function hpMul() { return 1 + stageIdx * 0.45 + totalT / 4800; }
+function dmgMul() { return 1 + stageIdx * 0.2 + totalT / 9000; }
+function xpNeed(l) { return 6 + l * 5 + Math.floor(l * l * 0.35); }
+function recompute() {
+  player.speed = 1.25 * (1 + 0.10 * (plv.boots || 0));
+  player.maxhp = 100 + 20 * (plv.heart || 0);
+  player.magnet = 26 + 13 * (plv.magnet || 0);
+  player.armor = plv.armor || 0;
+  player.regen = plv.regen || 0;
+  mightMul = 1 + 0.15 * (plv.might || 0);
+  hasteMul = 1 - 0.08 * (plv.haste || 0);
+}
+function startStage(i) {
+  stageIdx = i;
+  cfg = stageCfg(i);
+  stageT = 0;
+  bossOn = false; boss = null;
+  bannerT = 120;
+  enemies = []; ebullets = []; bullets = []; bolts = [];
+  for (var g = 0; g < gems.length; g++) addXp(gems[g].v);
+  gems = [];
+  pickups = [];
+  player.hp = Math.min(player.maxhp, player.hp + player.maxhp * 0.25);
+  spawnT = 40; burstT = 700; eliteT = cfg.elite * 60;
+  scene = 'play';
+}
+function spawnEnemy(type, elite, x, y) {
+  if (enemies.length >= E_CAP) return;
+  var et = ETYPES[type];
+  if (x === undefined) {
+    var a = rng() * 6.2832, d = 130 + rng() * 30;
+    x = player.x + Math.cos(a) * d;
+    y = player.y + Math.sin(a) * d;
+  }
+  var hp = et.hp * hpMul() * (elite ? 7 : 1);
+  enemies.push({ type: type, elite: !!elite, x: x, y: y, hp: hp, max: hp,
+                 dmg: Math.round(et.dmg * dmgMul() * (elite ? 1.6 : 1)),
+                 r: et.r + (elite ? 2 : 0),
+                 sp: et.sp * (elite ? 0.9 : 1) * (0.9 + rng() * 0.2),
+                 xp: et.xp * (elite ? 6 : 1),
+                 acd: 30 + (rng() * 30 | 0), flash: 0, kx: 0, ky: 0, ocd: 0,
+                 ph: rng() * 6.28, shootT: 60 + (rng() * 90 | 0), boss: false });
+}
+function spawnBoss() {
+  var hp = 240 * hpMul() * 1.6;
+  boss = { type: 'boss', elite: false, boss: true, x: player.x + rng() * 200 - 100, y: player.y - 130,
+           hp: hp, max: hp, dmg: Math.round(14 * dmgMul()), r: 8, sp: 0.34, xp: 40,
+           acd: 40, flash: 0, kx: 0, ky: 0, ocd: 0, ph: 0, shootT: 100, ringT: 130, sumT: 220 };
+  enemies.push(boss);
+  bossOn = true;
+  warnT = 100;
+}
+function hurtPlayer(dmg, dx, dy) {
+  if (player.invuln > 0 || scene !== 'play') return;
+  var d = Math.max(1, Math.round(dmg) - player.armor);
+  player.hp -= d;
+  player.invuln = 16;
+  player.x += dx * 4; player.y += dy * 4;
+  burst(player.x, player.y, 8, P.RED, 1.4);
+  A.playSfx(3);
+  if (player.hp <= 0) {
+    player.hp = 0;
+    burst(player.x, player.y, 30, P.WHITE, 2.5);
+    writeSave();
+    scene = 'over';
+  }
+}
+function killEnemy(e) {
+  var i = enemies.indexOf(e);
+  if (i >= 0) enemies.splice(i, 1);
+  kills++;
+  burst(e.x, e.y, e.elite || e.boss ? 20 : 6, e.boss ? P.RED : ETYPES[e.type].ci, e.elite || e.boss ? 2.2 : 1.2);
+  if (e.boss) {
+    gems.push({ x: e.x, y: e.y, v: 30, mag: false });
+    pickups.push({ kind: 'chest', x: e.x + 10, y: e.y });
+    bossOn = false; boss = null;
+    scene = 'clear'; clearT = 180;
+    player.hp = Math.min(player.maxhp, player.hp + player.maxhp * 0.25);
+    A.playSfx(5);
+    return;
+  }
+  gems.push({ x: e.x, y: e.y, v: e.xp, mag: false });
+  if (gems.length > GEM_CAP) {
+    gems[0].v += gems[gems.length - 1].v;
+    gems.pop();
+  }
+  if (e.elite) pickups.push({ kind: 'chest', x: e.x, y: e.y });
+  else {
+    var r = rng();
+    if (r < 0.02) pickups.push({ kind: 'heart', x: e.x, y: e.y });
+    else if (r < 0.028) pickups.push({ kind: 'magnet', x: e.x, y: e.y });
+  }
+}
+function addXp(v) {
+  player.xp += v;
+  while (player.xp >= player.next) {
+    player.xp -= player.next;
+    player.lvl++;
+    player.next = xpNeed(player.lvl);
+    levelQueue++;
+  }
+}
+function buildChoices() {
+  var pool = [];
+  for (var i = 0; i < weapons.length; i++)
+    if (weapons[i].lvl < WEAPONS[weapons[i].id].max) pool.push({ t: 'w', id: weapons[i].id, lv: weapons[i].lvl + 1 });
+  if (weapons.length < 4)
+    for (var id in WEAPONS) {
+      var has = false;
+      for (var q = 0; q < weapons.length; q++) if (weapons[q].id === id) has = true;
+      if (!has) pool.push({ t: 'w', id: id, lv: 1 });
+    }
+  for (var pid in PASSIVES)
+    if ((plv[pid] || 0) < PASSIVES[pid].max) pool.push({ t: 'p', id: pid, lv: (plv[pid] || 0) + 1 });
+  for (var s = pool.length - 1; s > 0; s--) { var j = (rng() * (s + 1)) | 0, tmp = pool[s]; pool[s] = pool[j]; pool[j] = tmp; }
+  var out = pool.slice(0, 3).map(function (c) {
+    var def = c.t === 'w' ? WEAPONS[c.id] : PASSIVES[c.id];
+    return { t: c.t, id: c.id, lv: c.lv, name: def.name, d1: def.d1, d2: def.d2, st: c.lv === 1 ? 'NEW!' : 'LV ' + c.lv };
+  });
+  while (out.length < 3) out.push({ t: 'h', name: 'ROAST CHICKEN', d1: 'RESTORES 40 HP', d2: '', st: 'EAT' });
+  return out;
+}
+function applyChoice(c) {
+  if (c.t === 'h') { player.hp = Math.min(player.maxhp, player.hp + 40); return; }
+  if (c.t === 'w') {
+    var found = null;
+    for (var i = 0; i < weapons.length; i++) if (weapons[i].id === c.id) found = weapons[i];
+    if (found) found.lvl = c.lv;
+    else weapons.push({ id: c.id, lvl: 1, tt: 0 });
+  } else {
+    plv[c.id] = c.lv;
+    if (c.id === 'heart') player.hp = Math.min(100 + 20 * c.lv, player.hp + 20);
+  }
+  recompute();
+}
+function grantChest() {
+  var c = buildChoices()[0];
+  applyChoice(c);
+  floats.push({ x: player.x, y: player.y - 14, txt: c.name, ci: P.GOLD, life: 70 });
+  burst(player.x, player.y, 10, P.GOLD, 1.8);
+}
+function burst(x, y, n, ci, pow) {
+  for (var i = 0; i < n && parts.length < PARTS_CAP; i++) {
+    var a = rng() * 6.2832, sp = 0.2 + rng() * (pow + 0.4);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, ci: rng() < 0.5 ? ci : P.WHITE, life: 14 + rng() * 12 | 0 });
+  }
+}
+function updateFx() {
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.92; p.vy *= 0.92;
+    if (--p.life <= 0) parts.splice(i, 1);
+  }
+  for (var j = floats.length - 1; j >= 0; j--) if (--floats[j].life <= 0) floats.splice(j, 1);
+  for (var k = bolts.length - 1; k >= 0; k--) if (--bolts[k].life <= 0) bolts.splice(k, 1);
+}
+function updateWeapons() {
+  orbPos = [];
+  for (var i = 0; i < weapons.length; i++) {
+    var wp = weapons[i], def = WEAPONS[wp.id], lv = wp.lvl - 1;
+    wp.tt++;
+    var cd = Math.max(8, Math.round(def.cd[lv] * hasteMul));
+    var dmg = def.dmg[lv] * mightMul;
+    if (wp.id === 'wand' && wp.tt >= cd) {
+      wp.tt = 0;
+      var near = [];
+      for (var e0 = 0; e0 < enemies.length; e0++) {
+        var en = enemies[e0];
+        var dx0 = en.x - player.x, dy0 = en.y - player.y;
+        if (dx0 * dx0 + dy0 * dy0 < 150 * 150) near.push([dx0 * dx0 + dy0 * dy0, en]);
+      }
+      near.sort(function (a, b) { return a[0] - b[0]; });
+      for (var k = 0; k < def.cnt[lv] && k < near.length; k++) {
+        var e1 = near[k][1];
+        var dx = e1.x - player.x, dy = e1.y - player.y, m = Math.hypot(dx, dy) || 1;
+        bullets.push({ x: player.x, y: player.y, vx: dx / m * 2.6, vy: dy / m * 2.6, dmg: dmg, pierce: def.pier[lv], ci: BULLET });
+      }
+    } else if (wp.id === 'knife' && wp.tt >= cd) {
+      wp.tt = 0;
+      for (var k2 = 0; k2 < def.cnt[lv]; k2++) {
+        var sp2 = (k2 - (def.cnt[lv] - 1) / 2) * 0.18;
+        bullets.push({ x: player.x, y: player.y, vx: player.fx * 3.4 - player.fy * sp2, vy: player.fy * 3.4 + player.fx * sp2, dmg: dmg, pierce: def.pier[lv], ci: BULLET });
+      }
+    } else if (wp.id === 'aura' && wp.tt >= 20) {
+      wp.tt = 0;
+      var R = def.rad[lv];
+      for (var e2 = enemies.length - 1; e2 >= 0; e2--) {
+        var e3 = enemies[e2];
+        var dx3 = e3.x - player.x, dy3 = e3.y - player.y;
+        var dd = dx3 * dx3 + dy3 * dy3;
+        if (dd < R * R) {
+          e3.hp -= dmg;
+          var d3 = Math.sqrt(dd) || 1;
+          e3.kx += dx3 / d3 * 0.5; e3.ky += dy3 / d3 * 0.5;
+          if (e3.hp <= 0) killEnemy(e3);
+        }
+      }
+    } else if (wp.id === 'orb') {
+      var n = def.cnt[lv], R2 = 22;
+      for (var k3 = 0; k3 < n; k3++) {
+        var a = t * 0.055 + k3 / n * 6.2832;
+        var ox = player.x + Math.cos(a) * R2, oy = player.y + Math.sin(a) * R2;
+        orbPos.push({ x: ox, y: oy });
+        for (var e4 = 0; e4 < enemies.length; e4++) {
+          var e5 = enemies[e4];
+          if (t < e5.ocd) continue;
+          var rr = 3 + e5.r;
+          if ((e5.x - ox) * (e5.x - ox) + (e5.y - oy) * (e5.y - oy) < rr * rr) {
+            e5.hp -= dmg;
+            e5.flash = 3;
+            e5.ocd = t + 15;
+            e5.kx += (e5.x - ox) * 0.06; e5.ky += (e5.y - oy) * 0.06;
+            if (e5.hp <= 0) killEnemy(e5);
+          }
+        }
+      }
+    } else if (wp.id === 'bolt' && wp.tt >= cd) {
+      var onScr = enemies.filter(function (e) { return Math.abs(e.x - player.x) < 130 && Math.abs(e.y - player.y) < 90; });
+      if (!onScr.length) { wp.tt = cd - 20; continue; }
+      wp.tt = 0;
+      for (var k4 = 0; k4 < def.cnt[lv] && onScr.length; k4++) {
+        var e6 = onScr.splice((rng() * onScr.length) | 0, 1)[0];
+        bolts.push({ x: e6.x, y: e6.y, life: 9 });
+        e6.hp -= dmg;
+        e6.flash = 5;
+        for (var o = 0; o < enemies.length; o++) {
+          var o2 = enemies[o];
+          if (o2 === e6) continue;
+          if ((o2.x - e6.x) * (o2.x - e6.x) + (o2.y - e6.y) * (o2.y - e6.y) < 144) {
+            o2.hp -= dmg * 0.5;
+            o2.flash = 3;
+            if (o2.hp <= 0) killEnemy(o2);
+          }
+        }
+        if (e6.hp <= 0) killEnemy(e6);
+        A.playSfx(4);
+      }
+    }
+  }
+}
+function updateBullets() {
+  for (var i = bullets.length - 1; i >= 0; i--) {
+    var b = bullets[i];
+    b.x += b.vx; b.y += b.vy;
+    var dead = b.x < player.x - 140 || b.x > player.x + 140 || b.y < player.y - 110 || b.y > player.y + 110;
+    if (!dead) {
+      for (var j = enemies.length - 1; j >= 0; j--) {
+        var e = enemies[j];
+        var rr = 3 + e.r;
+        var dx = b.x - e.x, dy = b.y - e.y;
+        if (dx > rr || dx < -rr || dy > rr || dy < -rr) continue;
+        if (dx * dx + dy * dy < rr * rr) {
+          e.hp -= b.dmg;
+          e.flash = 4;
+          e.kx += b.vx * 0.12; e.ky += b.vy * 0.12;
+          if (e.hp <= 0) killEnemy(e);
+          if (--b.pierce <= 0) { dead = true; break; }
+        }
+      }
+    }
+    if (dead) bullets.splice(i, 1);
+  }
+  for (var k = ebullets.length - 1; k >= 0; k--) {
+    var b2 = ebullets[k];
+    b2.x += b2.vx; b2.y += b2.vy;
+    var gone = b2.x < player.x - 130 || b2.x > player.x + 130 || b2.y < player.y - 100 || b2.y > player.y + 100;
+    if (!gone && (b2.x - player.x) * (b2.x - player.x) + (b2.y - player.y) * (b2.y - player.y) < 25) {
+      hurtPlayer(b2.dmg, b2.vx, b2.vy);
+      gone = true;
+    }
+    if (gone) ebullets.splice(k, 1);
+  }
+}
+function updateEnemies() {
+  for (var i = enemies.length - 1; i >= 0; i--) {
+    var e = enemies[i];
+    if (e.flash > 0) e.flash--;
+    if (e.acd > 0) e.acd--;
+    var dx = player.x - e.x, dy = player.y - e.y;
+    var d = Math.hypot(dx, dy) || 1;
+    dx /= d; dy /= d;
+    var mx = dx * e.sp, my = dy * e.sp;
+    if (e.type === 'ghost') {
+      var s = Math.sin(t * 0.05 + e.ph) * 0.5;
+      mx += -dy * s; my += dx * s;
+    } else if (e.type === 'spitter') {
+      if (d < 46) { mx = -dx * e.sp; my = -dy * e.sp; }
+      else if (d < 82) { mx = -dy * e.sp * 0.7; my = dx * e.sp * 0.7; }
+      if (--e.shootT <= 0 && d < 160) {
+        e.shootT = 150;
+        ebullets.push({ x: e.x, y: e.y, vx: dx * 1.05, vy: dy * 1.05, dmg: Math.round(5 * dmgMul()) });
+      }
+    }
+    if (e.boss) {
+      if (--e.ringT <= 0) {
+        e.ringT = 170;
+        for (var q = 0; q < 10; q++) {
+          var a = q / 10 * 6.2832;
+          ebullets.push({ x: e.x, y: e.y, vx: Math.cos(a) * 0.85, vy: Math.sin(a) * 0.85, dmg: Math.round(6 * dmgMul()) });
+        }
+      }
+      if (--e.sumT <= 0) {
+        e.sumT = 320;
+        for (var q2 = 0; q2 < 3; q2++) spawnEnemy('bat', false, e.x + rng() * 48 - 24, e.y + rng() * 48 - 24);
+      }
+    }
+    e.x += mx + e.kx;
+    e.y += my + e.ky;
+    e.kx *= 0.85; e.ky *= 0.85;
+    if (d < e.r + 3 && e.acd <= 0) {
+      e.acd = 45;
+      hurtPlayer(e.dmg, dx, dy);
+      if (scene !== 'play') return;
+    }
+    if (e.hp <= 0) killEnemy(e);
+  }
+  // 分离
+  for (var a1 = 0; a1 < enemies.length; a1 += 1) {
+    for (var a2 = a1 + 1; a2 < enemies.length; a2 += 1) {
+      var ea = enemies[a1], eb = enemies[a2];
+      var ddx = eb.x - ea.x, ddy = eb.y - ea.y;
+      var rr = ea.r + eb.r;
+      if (ddx > rr || ddx < -rr || ddy > rr || ddy < -rr) continue;
+      var dd2 = ddx * ddx + ddy * ddy;
+      if (dd2 < rr * rr && dd2 > 0.01) {
+        var dd3 = Math.sqrt(dd2), push = (rr - dd3) / dd3 * 0.22;
+        ddx *= push; ddy *= push;
+        if (!ea.boss) { ea.x -= ddx; ea.y -= ddy; }
+        if (!eb.boss) { eb.x += ddx; eb.y += ddy; }
+      }
+    }
+  }
+}
+function updateDrops() {
+  var mag2 = player.magnet * player.magnet;
+  for (var i = gems.length - 1; i >= 0; i--) {
+    var g = gems[i];
+    var dx = player.x - g.x, dy = player.y - g.y;
+    var dd = dx * dx + dy * dy;
+    if (g.mag || dd < mag2) {
+      g.mag = true;
+      var d = Math.sqrt(dd) || 1;
+      g.x += dx / d * 3; g.y += dy / d * 3;
+    }
+    if (dd < 12) {
+      addXp(g.v);
+      gems.splice(i, 1);
+    }
+  }
+  for (var j = pickups.length - 1; j >= 0; j--) {
+    var p = pickups[j];
+    if ((p.x - player.x) * (p.x - player.x) + (p.y - player.y) * (p.y - player.y) < 100) {
+      if (p.kind === 'heart') {
+        player.hp = Math.min(player.maxhp, player.hp + 30);
+        floats.push({ x: p.x, y: p.y - 8, txt: 'HP', ci: P.RED, life: 50 });
+      } else if (p.kind === 'magnet') {
+        for (var q = 0; q < gems.length; q++) gems[q].mag = true;
+        floats.push({ x: p.x, y: p.y - 8, txt: 'MAGNET', ci: P.ICE, life: 50 });
+      } else grantChest();
+      burst(p.x, p.y, 10, P.GOLD, 1.4);
+      pickups.splice(j, 1);
+    }
+  }
+}
+function updateSpawns() {
+  var interval = Math.max(14, Math.min(46, 46 - stageIdx * 2 - stageT / 300));
+  if (bossOn) interval *= 1.8;
+  if (--spawnT <= 0) {
+    spawnT = interval * (0.7 + rng() * 0.6);
+    spawnEnemy(cfg.mix[(rng() * cfg.mix.length) | 0]);
+    if (stageT > 3600 && rng() < 0.35) spawnEnemy(cfg.mix[(rng() * cfg.mix.length) | 0]);
+  }
+  if (--burstT <= 0) {
+    burstT = 900;
+    var n = 8 + stageIdx;
+    for (var k = 0; k < n; k++) {
+      var a = k / n * 6.2832;
+      spawnEnemy('bat', false, player.x + Math.cos(a) * 150, player.y + Math.sin(a) * 150);
+    }
+  }
+  if (!bossOn && --eliteT <= 0) {
+    eliteT = cfg.elite * 60;
+    spawnEnemy(cfg.mix[(rng() * cfg.mix.length) | 0], true);
+  }
+  if (!bossOn && stageT >= cfg.dur * 60) spawnBoss();
+}
+function doUpdate() {
+  t++;
+  if (scene === 'title') {
+    if (pad.start.pressed || pad.a.pressed) {
+      initPlayer();
+      startStage(0);
+    }
+    return;
+  }
+  if (scene === 'over') {
+    if (pad.start.pressed || pad.a.pressed) scene = 'title';
+    return;
+  }
+  if (pad.start.pressed) paused = !paused;
+  if (paused) return;
+  if (scene === 'levelup') {
+    if (pad.left.pressed || pad.up.pressed) sel = (sel + 2) % 3;
+    if (pad.right.pressed || pad.down.pressed) sel = (sel + 1) % 3;
+    if (pad.a.pressed) {
+      applyChoice(choices[sel]);
+      levelQueue--;
+      if (levelQueue > 0) { choices = buildChoices(); sel = 0; }
+      else scene = 'play';
+      A.playSfx(0);
+    }
+    return;
+  }
+  if (scene === 'clear') {
+    updateFx();
+    if (--clearT <= 0) startStage(stageIdx + 1);
+    return;
+  }
+  if (bannerT > 0) bannerT--;
+  if (warnT > 0) warnT--;
+  if (player.invuln > 0) player.invuln--;
+  stageT++; totalT++;
+  if (levelQueue > 0) { choices = buildChoices(); sel = 0; scene = 'levelup'; return; }
+  var dx = 0, dy = 0;
+  if (pad.left.down) dx -= 1;
+  if (pad.right.down) dx += 1;
+  if (pad.up.down) dy -= 1;
+  if (pad.down.down) dy += 1;
+  if (dx || dy) {
+    var m = Math.hypot(dx, dy);
+    player.x += dx / m * player.speed;
+    player.y += dy / m * player.speed;
+    player.fx = dx / m; player.fy = dy / m;
+  }
+  if (player.regen) player.hp = Math.min(player.maxhp, player.hp + 0.5 * player.regen / 60);
+  updateWeapons();
+  updateBullets();
+  if (scene !== 'play') return;
+  updateEnemies();
+  if (scene !== 'play') return;
+  updateDrops();
+  updateSpawns();
+  updateFx();
+}
+function initPlayer() {
+  player = { x: 0, y: 0, fx: 1, fy: 0, hp: 100, maxhp: 100, speed: 1.25, lvl: 1, xp: 0, next: xpNeed(1), magnet: 26, armor: 0, regen: 0, invuln: 0 };
+  weapons = [{ id: 'wand', lvl: 1, tt: 0 }];
+  plv = {};
+  recompute();
+  enemies = []; bullets = []; ebullets = []; gems = []; pickups = [];
+  parts = []; floats = []; bolts = []; orbPos = [];
+  kills = 0; levelQueue = 0; choices = null; sel = 0;
+  totalT = 0; warnT = 0; clearT = 0;
+}
+/* —— 绘制 —— */
+function draw() {
+  // BG 循环棋盘随玩家平移
+  S.scroll(0, Math.floor(player ? player.x : 0), Math.floor(player ? player.y : 0));
+  var i = 0;
+  if (scene !== 'title') {
+    var cx = player.x, cy = player.y;
+    var inView = function (x, y, m) { return Math.abs(x - cx) < 130 + m && Math.abs(y - cy) < 100 + m; };
+    // 宝石/拾取
+    for (var g = 0; g < gems.length && i < 120; g++)
+      if (inView(gems[g].x, gems[g].y, 4))
+        S.setSprite(i++, { x: (gems[g].x - cx + 120 - 4) | 0, y: (gems[g].y - cy + 88 - 4) | 0, tile: gems[g].v >= 6 ? GEM_L : GEM_S, prio: 1 });
+    for (var p = 0; p < pickups.length && i < 120; p++) {
+      var pk = pickups[p];
+      if (!inView(pk.x, pk.y, 6)) continue;
+      var ti = pk.kind === 'heart' ? HEART : pk.kind === 'magnet' ? MAGNET : CHEST;
+      S.setSprite(i++, { x: (pk.x - cx + 120 - 4) | 0, y: (pk.y - cy + 88 - 4 + Math.round(Math.sin(t * 0.1) * 1.5)) | 0, tile: ti, prio: 2 });
+    }
+    // 敌人
+    for (var e = 0; e < enemies.length && i < 121; e++) {
+      var en = enemies[e];
+      if (!inView(en.x, en.y, 8)) continue;
+      var sx = (en.x - cx + 120) | 0, sy = (en.y - cy + 88) | 0;
+      if (en.boss) S.setSprite(i++, { x: sx - 8, y: sy - 8, tile: BOSS, prio: 2 });
+      else S.setSprite(i++, { x: sx - 4, y: sy - 4, tile: ETILES[en.type], prio: 2 });
+    }
+    // 子弹/月珠
+    for (var b = 0; b < bullets.length && i < 124; b++)
+      if (inView(bullets[b].x, bullets[b].y, 2))
+        S.setSprite(i++, { x: (bullets[b].x - cx + 120 - 4) | 0, y: (bullets[b].y - cy + 88 - 4) | 0, tile: BULLET, prio: 3 });
+    for (var o = 0; o < orbPos.length && i < 126; o++)
+      S.setSprite(i++, { x: (orbPos[o].x - cx + 120 - 4) | 0, y: (orbPos[o].y - cy + 88 - 4) | 0, tile: ORB, prio: 3 });
+    // 玩家
+    if (!(player.invuln > 0 && (t % 4) < 2))
+      S.setSprite(i++, { x: (120 - 4) | 0, y: (88 - 4) | 0, tile: HERO, prio: 3 });
+    // 敌弹
+    for (var eb = 0; eb < ebullets.length && i < 128; eb++)
+      if (inView(ebullets[eb].x, ebullets[eb].y, 2))
+        S.setSprite(i++, { x: (ebullets[eb].x - cx + 120 - 4) | 0, y: (ebullets[eb].y - cy + 88 - 4) | 0, tile: EBULLET, prio: 3 });
+    // 粒子
+    for (var pi = 0; pi < parts.length && i < 128; pi += 2)
+      S.setSprite(i++, { x: (parts[pi].x - cx + 120) | 0, y: (parts[pi].y - cy + 88) | 0, tile: DOT, prio: 1 });
+  }
+  // 文本
+  if (scene === 'title') {
+    bios.text(72, 24, 'NIGHT', { color: P.RED, scale: 2 });
+    bios.text(60, 44, 'SURVIVOR', { color: P.GOLD, scale: 2 });
+    bios.text(42, 68, 'ENDLESS HORDE SURVIVAL', { color: P.SLATE });
+    if (best) bios.text(36, 82, 'BEST ' + mmss(best.t * 60) + ' K' + best.k, { color: P.YELLOW });
+    if ((t % 60) < 36) bios.text(66, 100, 'PRESS START', { color: P.WHITE });
+    bios.text(48, 124, 'WASD OR ARROWS TO MOVE', { color: P.LGRAY });
+    bios.text(48, 136, 'WEAPONS FIRE ON OWN', { color: P.SLATE });
+    bios.text(42, 148, 'SLAY BOSS TO ADVANCE', { color: P.SLATE });
+  } else {
+    var xr = Math.max(0, Math.min(1, player.xp / player.next));
+    bios.text(0, 0, '                            ', { color: P.INK });
+    var bar = '';
+    var nb = Math.round(20 * xr);
+    for (var bl = 0; bl < 20; bl++) bar += bl < nb ? '=' : '-';
+    bios.text(0, 0, bar, { color: P.CYAN });
+    var hr = Math.max(0, Math.min(1, player.hp / player.maxhp));
+    var hb = '';
+    var nh = Math.round(16 * hr);
+    for (var hl = 0; hl < 16; hl++) hb += hl < nh ? '#' : '-';
+    bios.text(2, 12, hb, { color: hr > 0.35 ? P.RED : P.YELLOW });
+    bios.text(140, 12, 'LV' + player.lvl, { color: P.WHITE });
+    bios.text(174, 12, mmss(totalT), { color: P.WHITE });
+    bios.text(216, 12, 'K' + kills, { color: P.LGRAY });
+    var wl = '';
+    for (var wI = 0; wI < weapons.length; wI++) wl += WEAPONS[weapons[wI].id].name[0];
+    bios.text(2, 162, wl, { color: P.GOLD });
+    for (var fl = 0; fl < floats.length; fl++)
+      if (floats[fl].life > 10 || (t % 4) < 2)
+        bios.text((floats[fl].x - player.x + 120 - floats[fl].txt.length * 6) | 0, (floats[fl].y - player.y + 88) | 0, floats[fl].txt, { color: floats[fl].ci });
+    // 落雷竖线(bios 竖排太多字符 → 用文本标记)
+    for (var bo = 0; bo < bolts.length; bo++)
+      bios.text((bolts[bo].x - player.x + 118) | 0, (bolts[bo].y - player.y + 40) | 0, '|', { color: bolts[bo].life % 2 ? P.WHITE : P.YELLOW });
+    if (scene === 'levelup') {
+      bios.text(84, 26, 'LEVEL UP!', { color: P.GOLD, scale: 2 });
+      for (var c = 0; c < 3; c++) {
+        var ch = choices[c];
+        var y = 48 + c * 26;
+        bios.text(16, y, (c === sel ? '> ' : '  ') + ch.name, { color: c === sel ? P.WHITE : P.LGRAY });
+        bios.text(190, y, ch.st, { color: ch.st === 'NEW!' ? P.GOLD : P.YELLOW });
+        bios.text(24, y + 12, ch.d1, { color: c === sel ? P.LGRAY : P.SLATE });
+        if (ch.d2) bios.text(24, y + 22, ch.d2, { color: c === sel ? P.LGRAY : P.SLATE });
+      }
+      bios.text(48, 146, 'ARROWS PICK - Z CONFIRM', { color: P.SLATE });
+    } else if (scene === 'clear') {
+      bios.text(60, 58, 'STAGE CLEAR!', { color: P.GOLD, scale: 2 });
+      bios.text(72, 82, 'HP RESTORED', { color: P.WHITE });
+    } else if (scene === 'over') {
+      bios.text(78, 46, 'YOU DIED', { color: P.RED, scale: 2 });
+      bios.text(60, 74, 'SURVIVED ' + mmss(totalT), { color: P.WHITE });
+      bios.text(54, 88, 'LEVEL ' + player.lvl + ' KILLS ' + kills, { color: P.LGRAY });
+      bios.text(48, 102, 'REACHED STAGE ' + (stageIdx + 1), { color: P.LGRAY });
+      if (best) bios.text(72, 116, 'BEST ' + mmss(best.t * 60), { color: P.YELLOW });
+      if ((t % 60) < 36) bios.text(66, 132, 'PRESS START', { color: P.WHITE });
+    }
+    if (warnT > 0 && (t % 12) < 8) {
+      bios.text(84, 54, 'WARNING', { color: P.RED, scale: 2 });
+      bios.text(30, 76, 'THE BOSS APPROACHES', { color: P.LGRAY });
+    }
+    if (bannerT > 0 && (bannerT > 20 || (t % 4) < 2)) {
+      bios.text(78, 48, 'STAGE ' + (stageIdx + 1), { color: P.WHITE });
+      bios.text((240 - cfg.name.length * 24) / 2 | 0, 62, cfg.name, { color: P.GOLD, scale: 2 });
+    }
+    if (paused) bios.text(90, 84, 'PAUSED', { color: P.WHITE, scale: 2 });
+  }
+}
+function writeSave() {
+  var tt = Math.floor(totalT / 60);
+  if (!best || tt > best.t) {
+    best = { t: tt, k: kills, s: stageIdx + 1 };
+    try { save(new Uint8Array([best.t & 255, best.t >> 8, Math.min(255, kills), Math.min(255, stageIdx + 1)])); } catch (e) { }
+  }
+}
+function buildGroundMap() {
+  // 32×32 循环棋盘
+  S.mapSize(0, 32, 32);
+  var e = new Uint32Array(0), e16 = new Uint16Array(32 * 32);
+  for (var y = 0; y < 32; y++) for (var x = 0; x < 32; x++) {
+    var h = ((x * 374761393 + y * 668265263) ^ (x * y * 97)) >>> 0;
+    var ti = (h % 7 < 2) ? T.G2 : T.G1;
+    if (h % 13 === 0) ti = T.G3;
+    e16[y * 32 + x] = S.entry(ti);
+  }
+  S.setMap(0, 0, 0, 32, 32, e16);
+}
+function init() {
+  S.loadTiles('bg', cart.seg('tilesbg', 0).data, 0);
+  S.loadTiles('obj', cart.seg('tilesobj', 0).data, 0);
+  S.backdrop(P.DG1);
+  buildGroundMap();
+  var d = load();
+  best = d && d.length >= 4 ? { t: d[0] | (d[1] << 8), k: d[2], s: d[3] } : null;
+  initPlayer();
+  scene = 'title'; paused = false;
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

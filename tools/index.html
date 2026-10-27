@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 工具链</title>
+<link rel="stylesheet" href="tools.css">
+<style>
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .card { background: #1b1b23; border: 1px solid #2c2c38; border-radius: 6px; padding: 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 14px; color: #e8e8f0; }
+  .card p { margin: 0 0 10px; color: #8f8fa0; font-size: 12px; min-height: 48px; }
+  .deferred { opacity: 0.45; }
+  .deferred h3::after { content: " ·暂缓(T16)"; color: #d8a657; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AetherConsole 2 · 工具链</h1>
+  <span class="crumb">七件可用,代码编辑器暂缓(T16)</span>
+  <span class="spacer"></span>
+  <a href="../index.html">← 主机</a>
+</header>
+<main>
+  <div class="cards">
+    <div class="card">
+      <h3>打包环境</h3>
+      <p>文件夹即项目:拖入游戏文件夹一键出品 .aec(标准/混淆),预算面板 + 装载冒烟。</p>
+      <a href="pack.html"><button class="primary">打开</button></a>
+    </div>
+    <div class="card">
+      <h3>图像编辑器</h3>
+      <p>三模式:精灵绘制(8/16)、地图绘制(8px 网格 + 碰撞通道)、自由绘制(自选画布 + PNG 导入量化 + 封面模板)。</p>
+      <a href="image.html"><button class="primary">打开</button></a>
+    </div>
+    <div class="card">
+      <h3>字体编辑器</h3>
+      <p>14×14 三区网格(12×12 主区 + 左 2 入侵 + 下 2 尾部),预览条 + 试排,导出 AFNT v2。</p>
+      <a href="font.html"><button class="primary">打开</button></a>
+    </div>
+    <div class="card">
+      <h3>音频工作站</h3>
+      <p>三件套:音色(FC/FM/模拟三族)、pattern(横向钢琴卷帘 64 步)、music(8 轨 bpm+swing)。导出 .aud。</p>
+      <a href="audio.html"><button class="primary">打开</button></a>
+    </div>
+    <div class="card">
+      <h3>模拟器即调试器</h3>
+      <p>同一程序:收起面板即纯运行器,展开即全功能调试器(断点/快照/回放/状态视图)。</p>
+      <a href="emulator.html"><button class="primary">打开</button></a>
+    </div>
+    <div class="card">
+      <h3>魔塔编辑器</h3>
+      <p>21 层魔塔关卡编辑:图块绘制 / 楼层管理 / 怪物数值 / 校验(楼梯·连通·钥匙收支),一键现场重打包 .aec 试玩。</p>
+      <a href="mtedit.html"><button class="primary">打开</button></a>
+    </div>
+    <div class="card">
+      <h3>3D FPS 地图编辑器</h3>
+      <p>Doom 风格扇区编辑(顶点/线/扇区/物件),画多边形自动建区缝合,软件渲染 3D 第一人称漫游预览。</p>
+      <a href="fpsedit.html"><button class="primary">打开</button></a>
+    </div>
+    <div class="card deferred">
+      <h3>代码编辑器</h3>
+      <p>按 T16 暂缓:代码用任意文本编辑器写 .ajs,打包自动收集,装带冒烟 + 调试器兜错。</p>
+      <button disabled>暂缓</button>
+    </div>
+  </div>
+  <section>
+    <h2>工作流(代码编辑器暂缓期)</h2>
+    <pre>任意文本编辑器写 mygame/main.ajs(+ gfx/ audio/ …)
+  → 图像编辑器产出 .til/.map/.bm2(封面 cover.bin 或 cover.png)
+  → 音频工作站产出 audio/*.aud
+  → 打包环境一键出品 mygame.aec(≤256KB 检查 + 冒烟)
+  → 模拟器/调试器装载运行;主机 index.html 导入卡带即玩</pre>
+  </section>
+</main>
+</body>
+</html>

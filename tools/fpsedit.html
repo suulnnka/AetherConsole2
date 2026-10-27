@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · 3D FPS 地图编辑器</title>
+<link rel="stylesheet" href="editor.css">
+<style>
+  #view { flex: 1; min-height: 0; background: #0b0b0e; position: relative; overflow: hidden; }
+  #view canvas { position: absolute; inset: 0; cursor: crosshair; }
+  .modeBtns .btn { min-width: 64px; }
+  .props { flex: 1; overflow: auto; padding: 8px 10px; }
+  .prow { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+  .prow label { color: var(--dim); width: 66px; flex: none; }
+  .prow input[type=number] { width: 84px; }
+  .prow input[type=range] { flex: 1; }
+  .sectPrev { width: 100%; height: 26px; border: 1px solid var(--line); border-radius: 4px; }
+  .thingPal { display: flex; flex-direction: column; gap: 3px; }
+  .thingItem { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px;
+    border: 1px solid transparent; cursor: pointer; }
+  .thingItem:hover { background: var(--panel2); }
+  .thingItem.sel { border-color: var(--accent); background: var(--panel2); }
+  .thingItem .dot { width: 14px; height: 14px; border-radius: 50%; flex: none;
+    border: 1px solid rgba(255,255,255,.35); }
+  .thingItem .nm { color: var(--fg); flex: 1; }
+  .thingItem .ct { color: var(--faint); font-size: 11px; }
+  .valList { font-size: 12px; }
+  .valList .e { color: var(--danger); margin: 2px 0; }
+  .valList .w { color: var(--accent2); margin: 2px 0; }
+  .valList .ok { color: var(--ok); margin: 2px 0; }
+  .hud3d { font: 12px/1.5 ui-monospace, monospace; color: #9fd8b0; }
+  .legend2d { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
+  .legend2d i { display: inline-block; width: 18px; height: 3px; margin-right: 6px; vertical-align: middle; }
+  .helpBox { color: var(--faint); font-size: 12px; line-height: 1.7; }
+  .helpBox b { color: var(--dim); font-weight: 600; }
+</style>
+</head>
+<body>
+<header class="toolbar">
+  <span class="title">3D FPS 地图编辑器</span>
+  <a class="btn" href="index.html">← 工具首页</a>
+  <input id="mapName" type="text" style="width:110px;" title="地图名" placeholder="地图名">
+  <span class="sep"></span>
+  <div class="modeBtns" id="modes">
+    <button class="btn active" data-mode="select" title="快捷键 1">选择</button>
+    <button class="btn" data-mode="draw" title="快捷键 2:画多边形自动建区">画区</button>
+    <button class="btn" data-mode="vertex" title="快捷键 3">顶点</button>
+    <button class="btn" data-mode="thing" title="快捷键 4">物件</button>
+  </div>
+  <span class="sep"></span>
+  <span class="label kv">网格</span>
+  <select id="snapSel" style="width:64px;">
+    <option>4</option><option>8</option><option selected>16</option>
+    <option>32</option><option>64</option><option value="0">自由</option>
+  </select>
+  <button id="btnUndo" class="btn icon" title="撤销 Ctrl+Z">↶</button>
+  <button id="btnRedo" class="btn icon" title="重做 Ctrl+Y">↷</button>
+  <span class="sep"></span>
+  <button id="btnCheck" class="btn">校验</button>
+  <button id="btnPlay" class="btn primary" title="3D 第一人称漫游(P)">▶ 3D 预览</button>
+  <span class="grow"></span>
+  <div class="menu" id="ioMenu">
+    <button class="btn" id="ioBtn">导入 / 导出 ▾</button>
+  </div>
+  <button id="btnNew" class="btn danger">新建地图</button>
+</header>
+
+<div class="main">
+  <aside class="side" style="width: 200px;">
+    <div class="panel-title">物件<span class="grow"></span><span id="thingCount" class="kv"></span></div>
+    <div style="padding:6px 8px;"><div class="thingPal" id="thingPal"></div></div>
+    <div style="border-top:1px solid var(--line);" class="panel-title">图例</div>
+    <div style="padding:6px 10px;">
+      <div class="legend2d">
+        <span><i style="background:#e0c26c;"></i>单面线(墙)</span>
+        <span><i style="background:#7ec8e3;"></i>双面线(可通行)</span>
+        <span><i style="background:#e06c6c;"></i>缺扇区的线</span>
+        <span><i style="background:#fff;"></i>选中 / 白点为顶点</span>
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--line);" class="panel-title">校验</div>
+    <div class="valList" id="valList" style="padding:6px 10px;"><span class="kv">未运行</span></div>
+    <div style="border-top:1px solid var(--line);padding:8px 10px;" class="helpBox" id="helpBox"></div>
+  </aside>
+
+  <section class="center" style="min-width:0;">
+    <div id="view"><canvas id="viewCv"></canvas></div>
+    <div class="toolrow" style="border-bottom:none;">
+      <span id="stHint" class="kv"></span>
+      <span class="grow"></span>
+      <span id="stPos" class="kv"></span>
+      <span id="stCounts" class="kv"></span>
+    </div>
+  </section>
+
+  <aside class="side right" style="width: 240px;">
+    <div class="panel-title">属性<span class="grow"></span><span id="propTitle" class="kv"></span></div>
+    <div class="props" id="props"></div>
+  </aside>
+</div>
+
+<footer class="statusbar">
+  <span id="st1">滚轮缩放 · 右键/空格拖动平移 · 自动存草稿</span>
+  <span id="st2"></span>
+  <span id="st3"></span>
+</footer>
+
+<script src="editor-common.js?v=1"></script>
+<script src="../js/tools/fpsmap-core.js?v=1"></script>
+<script src="../js/tools/fpsedit.js?v=1"></script>
+</body>
+</html>

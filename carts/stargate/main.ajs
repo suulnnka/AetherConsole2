@@ -1,0 +1,314 @@
+/* carts/stargate/main.ajs — GATE RUNNER(AC1 移植 · 模式2)
+ * 3D 方环门/网格地面 → R.line 投影绘制;鼠标/键盘转向照搬 AC1。240×176(中心 120/88)。
+ */
+var P = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+
+var W = 240, H = 176, CX = 120, CY = 88;
+var F = 100, PR = 0.42, MAXV = 0.062;
+var GATE_CI = [P.GOLD, P.CYAN, P.VIOLET, P.PINK];
+var LEVELS = [
+  { name: 'FIRST FLIGHT', n: 8, speed: 1.15, h: 3.6, gap: 150, motion: 0 },
+  { name: 'CROSSWIND', n: 10, speed: 1.25, h: 3.3, gap: 150, motion: 1 },
+  { name: 'AIRBOUND', n: 10, speed: 1.3, h: 3.2, gap: 145, motion: 2 },
+  { name: 'THE NARROWS', n: 12, speed: 1.35, h: 2.7, gap: 140, motion: 0 },
+  { name: 'DOUBLE TROUBLE', n: 10, speed: 1.4, h: 3.0, gap: 150, motion: 1, pair: true },
+  { name: 'SPIN DRIFT', n: 12, speed: 1.5, h: 2.9, gap: 140, motion: 3 },
+  { name: 'THE GAUNTLET', n: 14, speed: 1.55, h: 2.5, gap: 135, motion: 3 },
+  { name: 'HYPERSPEED', n: 12, speed: 1.9, h: 2.8, gap: 160, motion: 0 }
+];
+var scene, paused;
+var px, py, pz, vx, vy, speed, roll, cosR, sinR, useMouse;
+var gates, nextG, passCount, levelNum, cfg, score, lives, combo;
+var stars, parts, pops;
+var bannerT, clearT, crashT, flashT, best, t = 0;
+
+function levelCfg(n) {
+  if (n <= LEVELS.length) return LEVELS[n - 1];
+  var r = n - LEVELS.length;
+  var base = LEVELS[LEVELS.length - 1];
+  return { name: 'RANK ' + r, n: base.n + 2 * r, speed: Math.min(2.6, base.speed + 0.12 * r), h: Math.max(2.0, base.h - 0.12 * r), gap: base.gap, motion: n % 4, pair: n % 2 === 0 };
+}
+function makeGate(z, h, motion, near) {
+  var xr = 4.3 - h, yr = 3.4 - h;
+  var bx, by;
+  if (near) { bx = Math.max(-xr, Math.min(xr, near.bx + (rng() * 1.8 - 0.9))); by = Math.max(-yr, Math.min(yr, near.by + (rng() - 0.5))); }
+  else { bx = (gates.length % 2 ? -1 : 1) * (0.3 + rng() * 0.7) * xr; by = (rng() * 2 - 1) * yr; }
+  var mx = (motion & 1) ? Math.max(0, Math.min(0.7 + rng() * 0.9, xr - Math.abs(bx))) : 0;
+  var my = (motion & 2) ? Math.max(0, Math.min(0.4 + rng() * 0.6, yr - Math.abs(by))) : 0;
+  gates.push({ z: z, bx: bx, by: by, h: h, mx: mx, my: my, mf: 0.006 + rng() * 0.006, mp: rng() * 6.28, passed: false, pt: 0, ci: GATE_CI[gates.length % 4] });
+}
+function buildLevel(n) {
+  cfg = levelCfg(n);
+  gates = [];
+  var z = 170;
+  for (var i = 0; i < cfg.n; i++) {
+    var g1 = makeGate(z, cfg.h - i * 0.02, cfg.motion);
+    if (cfg.pair) makeGate(z + 40, cfg.h - 0.15 - i * 0.02, cfg.motion, g1);
+    z += cfg.gap;
+  }
+  nextG = 0; passCount = 0;
+  pz = 0; px = 0; py = 0; vx = 0; vy = 0; roll = 0;
+}
+function gx(g, fr) { return g.bx + (g.mx ? Math.sin(fr * g.mf + g.mp) * g.mx : 0); }
+function gy(g, fr) { return g.by + (g.my ? Math.sin(fr * g.mp + g.mf) * g.my : 0); }
+function resetRun() {
+  levelNum = 1; score = 0; lives = 3; combo = 0;
+  buildLevel(1);
+  bannerT = 110;
+  crashT = 0; clearT = 0; flashT = 0;
+  scene = 'play'; paused = false;
+}
+function doCrash() {
+  scene = 'crash';
+  crashT = 70; lives--; flashT = 9; combo = 0;
+  for (var i = 0; i < 36; i++) {
+    var a = rng() * 6.2832, sp = 0.4 + rng() * 2.8;
+    parts.push({ x: CX, y: CY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, ci: [P.WHITE, P.ORANGE, P.RED, P.YELLOW][(rng() * 4) | 0], life: 24 + rng() * 26 | 0 });
+  }
+  A.playSfx(4);
+}
+function updateParts() {
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.94; p.vy *= 0.94;
+    if (--p.life <= 0) parts.splice(i, 1);
+  }
+  for (var j = pops.length - 1; j >= 0; j--) if (--pops[j].life <= 0) pops.splice(j, 1);
+  if (flashT > 0) flashT--;
+}
+function proj(x, y, z) {
+  var dz = z - pz;
+  if (dz < 1.5) return null;
+  var sx = (x - px) * F / dz, sy = -(y - py) * F / dz;
+  return [CX + sx * cosR - sy * sinR, CY + sx * sinR + sy * cosR];
+}
+function square(cxw, cyw, z, s, ci) {
+  var a = proj(cxw - s, cyw - s, z), b = proj(cxw + s, cyw - s, z);
+  var c = proj(cxw + s, cyw + s, z), d = proj(cxw - s, cyw + s, z);
+  if (!a || !b || !c || !d) return;
+  R.line(a[0] | 0, a[1] | 0, b[0] | 0, b[1] | 0, ci, 1);
+  R.line(b[0] | 0, b[1] | 0, c[0] | 0, c[1] | 0, ci, 1);
+  R.line(c[0] | 0, c[1] | 0, d[0] | 0, d[1] | 0, ci, 1);
+  R.line(d[0] | 0, d[1] | 0, a[0] | 0, a[1] | 0, ci, 1);
+}
+function doUpdate() {
+  t++;
+  if (scene === 'title') { if (pad.start.pressed || pad.a.pressed) resetRun(); return; }
+  if (scene === 'over') { if (pad.start.pressed || pad.a.pressed) { writeSave(); scene = 'title'; } return; }
+  if (pad.start.pressed) paused = !paused;
+  if (paused) return;
+  if (scene === 'clear') {
+    updateParts();
+    if (--clearT <= 0) { levelNum++; buildLevel(levelNum); bannerT = 100; scene = 'play'; }
+    return;
+  }
+  if (scene === 'crash') {
+    updateParts();
+    if (--crashT <= 0) {
+      if (lives <= 0) { writeSave(); scene = 'over'; }
+      else { buildLevel(levelNum); bannerT = 80; scene = 'play'; }
+    }
+    return;
+  }
+  if (bannerT > 0) bannerT--;
+  // 转向:鼠标(绝对偏移)/ 键盘
+  if (mouse.left || mouse.right || Math.abs(mouse.dx) > 0.01 || Math.abs(mouse.dy) > 0.01) useMouse = true;
+  var kbL = pad.left.down, kbR = pad.right.down, kbU = pad.up.down, kbD = pad.down.down;
+  if (kbL || kbR || kbU || kbD) useMouse = false;
+  if (useMouse) {
+    var tx = Math.max(-1, Math.min(1, (mouse.x - CX) / CX));
+    var ty = Math.max(-1, Math.min(1, (mouse.y - CY) / CY));
+    if (Math.abs(tx) < 0.07) tx = 0;
+    if (Math.abs(ty) < 0.07) ty = 0;
+    vx += (tx * MAXV - vx) * 0.3;
+    vy += (ty * MAXV * 0.8 - vy) * 0.3;
+  } else {
+    var ax = 0.0055, ay = 0.005;
+    if (kbL) vx -= ax;
+    if (kbR) vx += ax;
+    if (kbU) vy += ay;
+    if (kbD) vy -= ay;
+    if (!kbL && !kbR) vx *= 0.9;
+    if (!kbU && !kbD) vy *= 0.9;
+    vx = Math.max(-MAXV, Math.min(MAXV, vx));
+    vy = Math.max(-MAXV * 0.8, Math.min(MAXV * 0.8, vy));
+  }
+  px = Math.max(-8.5, Math.min(8.5, px + vx));
+  py = Math.max(-5.5, Math.min(5.5, py + vy));
+  speed = cfg.speed * (1 + passCount * 0.01);
+  pz += speed;
+  roll += (-vx / MAXV * 0.25 - roll) * 0.15;
+  cosR = Math.cos(roll); sinR = Math.sin(roll);
+  for (var i = 0; i < gates.length; i++) {
+    var g = gates[i];
+    if (g.passed) continue;
+    if (pz >= g.z) {
+      var dx = Math.abs(px - gx(g, t));
+      var dy = Math.abs(py - gy(g, t));
+      if (dx > g.h - PR || dy > g.h - PR) { doCrash(); return; }
+      g.passed = true;
+      g.pt = 14;
+      passCount++;
+      var pts = 100;
+      if (Math.max(dx, dy) < (g.h - PR) * 0.32) {
+        combo++;
+        pts += 50 * combo;
+        pops.push({ t: combo > 1 ? 'PERFECT X' + combo : 'PERFECT', y: 52, ci: P.GOLD, life: 46 });
+        A.playSfx(2);
+      } else combo = 0;
+      score += pts;
+    } else break;
+  }
+  while (nextG < gates.length && gates[nextG].passed) nextG++;
+  if (passCount >= gates.length) {
+    scene = 'clear';
+    clearT = 140;
+    score += 250;
+    pops.push({ t: 'CLEAR 250', y: 64, ci: P.CYAN, life: 120 });
+    A.playSfx(5);
+    return;
+  }
+  for (var s = 0; s < stars.length; s++) {
+    var st = stars[s];
+    if (st.z < pz + 1.5) { st.z = pz + 180 + rng() * 60; st.x = rng() * 60 - 30; st.y = rng() * 40 - 20; }
+  }
+  updateParts();
+}
+/* —— 绘制 —— */
+function draw() {
+  R.clear(0);
+  if (scene === 'title') { drawTitle(); return; }
+  // 星
+  for (var i = 0; i < stars.length; i++) {
+    var p2 = proj(stars[i].x, stars[i].y, stars[i].z);
+    if (!p2) continue;
+    var dz = stars[i].z - pz;
+    R.pset(p2[0] | 0, p2[1] | 0, dz < 26 ? P.WHITE : dz < 90 ? P.LGRAY : P.DEEP);
+  }
+  // 地面网格
+  for (var wx = -12; wx <= 12; wx += 6) {
+    var a = proj(wx, -7.5, pz + 3), b = proj(wx, -7.5, pz + 220);
+    if (a && b) R.line(a[0] | 0, a[1] | 0, b[0] | 0, b[1] | 0, P.GRID, 1);
+  }
+  for (var wz = Math.ceil((pz + 6) / 22) * 22; wz < pz + 200; wz += 22) {
+    var a2 = proj(-12, -7.5, wz), b2 = proj(12, -7.5, wz);
+    if (a2 && b2) R.line(a2[0] | 0, a2[1] | 0, b2[0] | 0, b2[1] | 0, wz - pz < 60 ? P.GRID : P.INK, 1);
+  }
+  // 门(远→近)
+  for (var gi = gates.length - 1; gi >= 0; gi--) {
+    var g = gates[gi];
+    var dz = g.z - pz;
+    if (dz < 1.5 || dz > 230) continue;
+    if (g.pt > 0) g.pt--;
+    var cxw = gx(g, t), cyw = gy(g, t);
+    if (g.pt > 0) {
+      square(cxw, cyw, g.z, g.h, P.WHITE);
+      square(cxw, cyw, g.z, g.h + 1.05, P.WHITE);
+      continue;
+    }
+    square(cxw, cyw, g.z, g.h + 1.05, g.ci);
+    square(cxw, cyw, g.z, g.h, dz < 70 ? P.WHITE : P.LGRAY);
+    if (dz < 30) square(cxw, cyw, g.z, g.h + 1.3, g.ci);
+  }
+  // 导航点
+  var ng = gates[nextG];
+  if (ng) {
+    var np = proj(gx(ng, t), gy(ng, t), ng.z);
+    if (np && (t % 10) < 7) {
+      R.pset(np[0] | 0, (np[1] - 3) | 0, P.GOLD);
+      R.pset(np[0] | 0, (np[1] + 3) | 0, P.GOLD);
+      R.pset((np[0] - 3) | 0, np[1] | 0, P.GOLD);
+      R.pset((np[0] + 3) | 0, np[1] | 0, P.GOLD);
+    }
+  }
+  // 自机 + 滚转刻度
+  R.rect(CX - 1, CY - 1, 3, 3, P.WHITE);
+  R.pset(CX, CY, P.CYAN);
+  var c = Math.cos(roll), s2 = Math.sin(roll);
+  for (var side = -1; side <= 1; side += 2) {
+    var x0 = CX + side * 22 * c, y0 = CY + side * 22 * s2;
+    var x1 = CX + side * 30 * c, y1 = CY + side * 30 * s2;
+    R.line(x0 | 0, y0 | 0, x1 | 0, y1 | 0, P.SLATE, 1);
+  }
+  if ((t % 14) < 7) {
+    R.pset(CX - 5, CY, P.CYAN); R.pset(CX + 5, CY, P.CYAN);
+    R.pset(CX, CY - 5, P.CYAN); R.pset(CX, CY + 5, P.CYAN);
+  }
+  // 粒子/弹字
+  for (var pi = 0; pi < parts.length; pi++) R.pset(parts[pi].x | 0, parts[pi].y | 0, parts[pi].ci);
+  for (var pj = 0; pj < pops.length; pj++)
+    if (pops[pj].life > 12 || (t % 4) < 2)
+      bios.text((240 - pops[pj].t.length * 12) / 2 | 0, pops[pj].y | 0, pops[pj].t, { color: pops[pj].ci });
+  // HUD
+  bios.text(4, 2, 'LV' + levelNum, { color: P.WHITE });
+  var gTxt = passCount + '/' + gates.length;
+  bios.text((240 - gTxt.length * 12) / 2 | 0, 2, gTxt, { color: P.LGRAY });
+  bios.text(204, 2, '' + score, { color: P.GOLD });
+  var lv = '';
+  for (var li = 0; li < lives; li++) lv += '> ';
+  bios.text(4, 16, lv, { color: P.CYAN });
+  if (flashT > 0) {
+    var th = Math.min(6, 7 - flashT);
+    R.rect(0, 0, W, th, P.RED); R.rect(0, H - th, W, th, P.RED);
+    R.rect(0, 0, th, H, P.RED); R.rect(W - th, 0, th, H, P.RED);
+  }
+  if (scene === 'crash' && (t % 8) < 5) bios.text(96, 64, 'CRASH', { color: P.RED, scale: 2 });
+  if (scene === 'clear') bios.text(72, 56, 'LEVEL CLEAR', { color: P.CYAN, scale: 2 });
+  if (scene === 'over') {
+    bios.text(72, 48, 'GAME OVER', { color: P.RED, scale: 2 });
+    bios.text(72, 76, 'SCORE ' + score, { color: P.WHITE });
+    bios.text(60, 90, 'REACHED LEVEL ' + levelNum, { color: P.LGRAY });
+    if (best) bios.text(66, 104, 'BEST ' + best.s, { color: P.YELLOW });
+    if ((t % 60) < 36) bios.text(66, 120, 'PRESS START', { color: P.WHITE });
+  }
+  if (bannerT > 0 && (bannerT > 20 || (t % 4) < 2)) {
+    bios.text(90, 42, 'LEVEL ' + levelNum, { color: P.WHITE });
+    bios.text((240 - cfg.name.length * 24) / 2 | 0, 56, cfg.name, { color: P.GOLD, scale: 2 });
+    if (useMouse) bios.text(84, 78, 'MOUSE STEER', { color: P.SLATE });
+  }
+  if (paused) bios.text(90, 84, 'PAUSED', { color: P.WHITE, scale: 2 });
+}
+function drawTitle() {
+  for (var i = 0; i < 40; i++)
+    R.pset(((i * 53 + t * 0.12) % W) | 0, (i * 97) % H | 0, (i % 4) ? P.DEEP : P.SLATE);
+  for (var k = 0; k < 5; k++) {
+    var tt = (t * 0.006 + k / 5) % 1;
+    var s = 5 + tt * 62;
+    var ci = tt < 0.25 ? P.WHITE : tt < 0.5 ? P.LGRAY : GATE_CI[k % 4];
+    var x0 = 120 - s, y0 = 78 - s;
+    for (var x = x0; x <= x0 + 2 * s; x += 2) { R.pset(x | 0, y0 | 0, ci); R.pset(x | 0, (y0 + 2 * s) | 0, ci); }
+    for (var y = y0; y <= y0 + 2 * s; y += 2) { R.pset(x0 | 0, y | 0, ci); R.pset((x0 + 2 * s) | 0, y | 0, ci); }
+  }
+  R.rect(119, 77, 3, 3, P.WHITE);
+  bios.text(90, 20, 'GATE', { color: P.GOLD, scale: 2 });
+  bios.text(78, 40, 'RUNNER', { color: P.CYAN, scale: 2 });
+  if (best) bios.text(66, 62, 'BEST ' + best.s + ' LV' + best.l, { color: P.YELLOW });
+  if ((t % 60) < 36) bios.text(66, 92, 'PRESS START', { color: P.WHITE });
+  bios.text(48, 112, 'MOUSE OR ARROWS STEER', { color: P.LGRAY });
+  bios.text(48, 124, 'THREAD THE GATES', { color: P.SLATE });
+  bios.text(36, 136, 'TOUCH A FRAME AND CRASH', { color: P.SLATE });
+}
+function writeSave() {
+  if (!best || score > (best.s || 0)) {
+    best = { s: score, l: levelNum };
+    try { save(new Uint8Array([score & 255, (score >> 8) & 255, (score >> 16) & 255, Math.min(255, levelNum)])); } catch (e) { }
+  }
+}
+function init() {
+  scene = 'title'; paused = false;
+  parts = []; pops = [];
+  var d = load();
+  best = d && d.length >= 4 ? { s: d[0] | (d[1] << 8) | (d[2] << 16), l: d[3] } : null;
+  stars = [];
+  for (var i = 0; i < 90; i++) stars.push({ x: rng() * 60 - 30, y: rng() * 40 - 20, z: 2 + rng() * 218 });
+  px = py = pz = vx = vy = 0;
+  roll = 0; cosR = 1; sinR = 0;
+  gates = []; nextG = 0; passCount = 0;
+  levelNum = 1; score = 0; lives = 3; combo = 0;
+  cfg = levelCfg(1);
+  bannerT = 0; clearT = 0; crashT = 0; flashT = 0;
+  useMouse = false;
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

@@ -1,0 +1,510 @@
+/* carts/magictower/main.ajs — MAGIC TOWER(AC1 移植 · 模式1)
+ * 11×11×16px 地图走 BG tile;怪物/物品/主角走 OAM 精灵;侧栏与对话框走 bios.text。
+ * 战斗公式/数值/事件照搬 AC1;存档 RLE 进 2048B。
+ */
+var D = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+var P = D.P, T = D.T, SPR = D.SPR, IT = D.IT;
+
+var TILE = 16, MW = 11, MH = 11, SIDEX = 178;
+var MON = D.MON || {
+  g: { n: 'SLIME', hp: 35, atk: 18, def: 1, gold: 1 },
+  h: { n: 'R-SLIME', hp: 45, atk: 20, def: 2, gold: 2 },
+  f: { n: 'BAT', hp: 35, atk: 38, def: 3, gold: 3 },
+  F: { n: 'BIG BAT', hp: 80, atk: 90, def: 10, gold: 8 },
+  n: { n: 'SKELETON', hp: 110, atk: 25, def: 5, gold: 5 },
+  m: { n: 'SKEL KN', hp: 150, atk: 40, def: 20, gold: 8 },
+  c: { n: 'MAGE', hp: 60, atk: 35, def: 3, gold: 6, first: true },
+  C: { n: 'HI-MAGE', hp: 100, atk: 60, def: 8, gold: 10, first: true },
+  t: { n: 'ROCK', hp: 100, atk: 68, def: 30, gold: 7 },
+  o: { n: 'ORC', hp: 320, atk: 115, def: 10, gold: 13 },
+  O: { n: 'ORC KN', hp: 345, atk: 130, def: 30, gold: 17 },
+  v: { n: 'RED BAT', hp: 130, atk: 120, def: 15, gold: 10 },
+  w: { n: 'GUARD', hp: 800, atk: 160, def: 60, gold: 30 },
+  G: { n: 'SENTRY', hp: 1500, atk: 340, def: 140, gold: 50, first: true },
+  N: { n: 'PRIEST', hp: 600, atk: 260, def: 60, gold: 60, first: true },
+  D: { n: 'DRAGON', hp: 3000, atk: 440, def: 140, gold: 0 },
+  L: { n: 'DEVIL', hp: 2600, atk: 480, def: 150, gold: 0 }
+};
+var ITEM_CH = {
+  k: 'keyY', j: 'keyB', i: 'keyR',
+  u: 'potS', p: 'potL', U: 'potL2', P: 'potS2',
+  a: 'gemR', s: 'gemB',
+  A: 'sw0', Z: 'sw1', Q: 'sw2', E: 'sw3',
+  S: 'sh0', X: 'sh1', W: 'sh2', R: 'sh3'
+};
+var ITEMS = {
+  k: { msg: 'YELLOW KEY', fn: function (s) { s.keyY++; } },
+  j: { msg: 'BLUE KEY', fn: function (s) { s.keyB++; } },
+  i: { msg: 'RED KEY', fn: function (s) { s.keyR++; } },
+  u: { msg: 'HP +200', fn: function (s) { s.hp += 200; } },
+  p: { msg: 'HP +500', fn: function (s) { s.hp += 500; } },
+  U: { msg: 'HP +1000', fn: function (s) { s.hp += 1000; } },
+  P: { msg: 'HP +2000', fn: function (s) { s.hp += 2000; } },
+  a: { msg: 'ATK +2', fn: function (s) { s.atk += 2; } },
+  s: { msg: 'DEF +2', fn: function (s) { s.def += 2; } },
+  A: { msg: 'IRON SWORD +10', fn: function (s) { s.atk += 10; } },
+  Z: { msg: 'SILV SWORD +20', fn: function (s) { s.atk += 20; } },
+  Q: { msg: 'KNGT SWORD +40', fn: function (s) { s.atk += 40; } },
+  E: { msg: 'HOLY SWORD +100', fn: function (s) { s.atk += 100; } },
+  S: { msg: 'IRON SHIELD +10', fn: function (s) { s.def += 10; } },
+  X: { msg: 'SILV SHIELD +20', fn: function (s) { s.def += 20; } },
+  W: { msg: 'KNGT SHIELD +40', fn: function (s) { s.def += 40; } },
+  R: { msg: 'HOLY SHIELD +100', fn: function (s) { s.def += 100; } }
+};
+var DOORS = { d: 'keyY', b: 'keyB', r: 'keyR' };
+var DOOR_CN = { d: 'YELLOW', b: 'BLUE', r: 'RED' };
+
+// 编辑器试玩:data 段可带整塔 MAPS / MON 覆盖(同结构)即生效
+var MAPS = (D.MAPS && D.MAPS.length >= 2) ? D.MAPS : [
+  ['###########','#<..#..k..#','#...#.g.a.#','#.###.....#','#.#.###d###','#.#.....#.#','#.#..h..#.#','#d####.##.#','#x..k...u.#','#....g....#','###########'],
+  ['###########','#..f..n..<#','#.#######.#','#k#.....#k#','#.#..A..#.#','#.#.....#.#','#.###d###.#','#......f..#','#.g.....u.#','#>..g...u.#','###########'],
+  ['###########','#h.f#<#.S.#','#.s.d.b..a#','#...#k#m..#','#...#.#...#','#kjf.....j#','#...#.#...#','#...#j#h..#','#c..ad.b.c#','#...#>#.s.#','###########'],
+  ['###########','#<....m..F#','#.#######.#','#u#a...s#u#','#.#..Z..#.#','#j#.....#j#','#.###b###.#','#F.v...m..#','#p.......p#','#>..a.s...#','###########'],
+  ['###########','#.n.#<#.f.#','#..pd.b.c.#','#...#k#...#','#...#.#...#','#kps.y..pj#','#...#.#...#','#...#j#..h#','#.n.d.b.f.#','#...#>#...#','###########'],
+  ['###########','#.n..#...<#','#c...djm..#','#....#....#','#...k#U...#','#.b..#..b.#','#....#...n#','#..m.#.t..#','#.c..d..X.#','#>...#j.n.#','###########'],
+  ['###########','#.C..v...<#','#..F...CP.#','#j##...##.#','#....F....#','##d#####b##','#....o.####','#.i....#aa#','#......r..#','#>..k..#ss#','###########'],
+  ['###########','#u..j#k..<#','#....#....#','#.o..#..o.#','#....d....#','#tU..#..Ut#','#....b....#','#....#....#','#.p..#..p.#','#>...#...i#','###########'],
+  ['###########','#v..y....<#','#.#######.#','#j#C...C#j#','#.#..Q..#.#','#.#.....#.#','#.###r###.#','#...o..P..#','#k.......v#','#>........#','###########'],
+  ['###########','#.O..#.o.<#','#.........#','#....#U...#','#.k..#....#','#.d..#..d.#','#....#....#','#..U.#...w#','#.o..#....#','#>...#j.i.#','###########'],
+  ['###########','#.O...w..<#','#.#######.#','#.#a..s.#.#','#d#..W..#d#','#.#s..a.#.#','#.###b###.#','#..O...P..#','#$.P......#','#>..k..k.j#','###########'],
+  ['###########','#O..U..i.<#','#########r#','#..w...OP.#','#.#########','#Pd.w...P.#','########.##','#..O.w....#','#.#########','#>.UO..k..#','###########'],
+  ['###########','#.w.#<#.O.#','#.asd.b...#','#...#k#C.P#','#...#.#...#','#.k..w.vj.#','#...#.#...#','#P.O#j#..w#','#.v.d.b.C.#','#...#>#...#','###########'],
+  ['###########','#U.a.#.i.i#','#.a..rP...#','#s.w.#..aa#','#...<#....#','#....#..#.#','#....#...P#','#....#s...#','#.k.Ud..w.#','#>...#.s.s#','###########'],
+  ['###########','#k......P<#','#..w..O...#','##d#####b##','#k...w...j#','#PO.....w.#','#.........#','##d#####d##','#......P..#','#>..O....k#','###########'],
+  ['###########','#.N..w...<#','#.#######.#','#a#..s..#a#','#.#.a.s.#.#','#s#.....#P#','#.###d###.#','#..w.N....#','#$.......P#','#>.k......#','###########'],
+  ['###########','#.N.#<#.j.#','#..Ud.b.N.#','#k..#.#...#','#...#.#...#','#.k.......#','#...#.#..P#','#...#j#...#','#.U.d.bPG.#','#...#>#..P#','###########'],
+  ['###########','#....E...<#','#..##r##..#','#....w....#','#.w.......#','#..w...O..#','#.P.......#','####d######','#.k...O.w.#','#>..P....i#','###########'],
+  ['###########','#>.......<#','#.........#','#.N...w...#','#.k....U..#','#.......P.#','####b######','#w.......w#','#.U..w...P#','#....R...j#','###########'],
+  ['###########','#>.......<#','#.O...G...#','#...P.....#','#.k...O...#','#..w..P...#','#####r#####','#.........#','#....D....#','#.........#','###########'],
+  ['###########','#>........#','#.........#','#..#...#..#','#.........#','#....L....#','#.........#','#..#...#..#','#.........#','#.........#','###########']
+];
+
+var scene, grids, floor, px, py, st, msg, msgT, battle, shopSel, warpSel;
+var dlgLines, dlgIdx, dlgGrant, holdT, lastMove, fairy1, warpWing, maxFloor, paused;
+var ents, t = 0;
+
+function newState() {
+  return { hp: 1000, atk: 10, def: 10, gold: 0, keyY: 0, keyB: 0, keyR: 0 };
+}
+function say(text) { msg = text; msgT = 110; }
+function tileAt(f, x, y) { return grids[f][y][x]; }
+function setTile(f, x, y, ch) {
+  var row = grids[f][y];
+  grids[f][y] = row.slice(0, x) + ch + row.slice(x + 1);
+  if (f === floor) refreshCell(x, y);
+}
+function forecast(id) {
+  var m = MON[id];
+  if (st.atk - m.def <= 0) return { no: true, rounds: 0, dmg: 1e9 };
+  var rounds = Math.ceil(m.hp / (st.atk - m.def));
+  var hits = m.first ? rounds : rounds - 1;
+  return { no: false, rounds: rounds, dmg: Math.max(0, hits * Math.max(0, m.atk - st.def)) };
+}
+function findTile(f, ch) {
+  for (var y = 0; y < MH; y++) for (var x = 0; x < MW; x++)
+    if (grids[f][y][x] === ch) return [x, y];
+  return null;
+}
+
+/* —— BG 地图:22×22 tile + 侧栏 8 列(透明露 backdrop)—— */
+function cellEntry(ch, ix, iy) {
+  // 返回 2×2 entry 块左上索引;仅静态地形进地图
+  if (ch === '#') return T.WALL;
+  if (ch === '<') return T.UP;
+  if (ch === '>') return T.DN;
+  if (ch === 'd') return T.DOOR_Y;
+  if (ch === 'b') return T.DOOR_B;
+  if (ch === 'r') return T.DOOR_R;
+  return T.FLOOR;          // 其余一律地板(实体走精灵)
+}
+function refreshCell(x, y) {
+  var ch = grids[floor][y][x];
+  var base = cellEntry(ch);
+  var e = [];
+  for (var iy = 0; iy < 2; iy++) for (var ix = 0; ix < 2; ix++)
+    e.push(S.entry(base + iy * 2 + ix));
+  S.setMap(0, x * 2, y * 2, 2, 2, e);
+  rebuildEnts();
+}
+function rebuildMap() {
+  S.mapSize(0, 22, 22);
+  var all = new Uint16Array(22 * 22);
+  for (var y = 0; y < MH; y++) for (var x = 0; x < MW; x++) {
+    var base = cellEntry(grids[floor][y][x], 0, 0);
+    for (var iy = 0; iy < 2; iy++) for (var ix = 0; ix < 2; ix++)
+      all[(y * 2 + iy) * 22 + x * 2 + ix] = S.entry(base + iy * 2 + ix);
+  }
+  S.setMap(0, 0, 0, 22, 22, all);
+  rebuildEnts();
+}
+/* —— 实体(怪物/物品/事件)→ OAM —— */
+function entTile(ch) {
+  if (MON[ch]) return SPR[ch];
+  if (ch === 'y') return SPR.y;
+  if (ch === '$') return IT.chest;
+  var k = ITEM_CH[ch];
+  if (!k) return -1;
+  if (k === 'potL2') return IT.potL;
+  if (k === 'potS2') return IT.potS;
+  if (k[0] === 's' && k[1] === 'w') return IT.sword[+k[2]];
+  if (k[0] === 's' && k[1] === 'h') return IT.shield[+k[2]];
+  return IT[k];
+}
+function rebuildEnts() {
+  ents = [];
+  var g = grids[floor];
+  for (var y = 0; y < MH; y++) for (var x = 0; x < MW; x++) {
+    var ch = g[y][x];
+    if (ch === '#' || ch === '.' || ch === '<' || ch === '>' || DOORS[ch]) continue;
+    var ti = entTile(ch);
+    if (ti >= 0) ents.push({ ch: ch, x: x, y: y, tile: ti });
+  }
+}
+
+function goFloor(to, viaChar) {
+  floor = to;
+  maxFloor = Math.max(maxFloor, to);
+  var p = findTile(to, viaChar) || findTile(to, to === MAPS.length - 1 ? '>' : '<');
+  px = p[0]; py = p[1];
+  rebuildMap();
+  say('FLOOR ' + to);
+  persist();
+}
+
+/* —— 存档(RLE)—— */
+function persist() {
+  if (scene === 'title' || scene === 'ending') return;
+  var b = [77, 84];
+  b.push(floor, px, py, maxFloor, fairy1 ? 1 : 0, warpWing ? 1 : 0);
+  var w16 = function (v) { b.push(v & 255, (v >> 8) & 255); };
+  w16(Math.min(65535, Math.max(0, st.hp))); w16(st.atk); w16(st.def); w16(Math.min(65535, st.gold));
+  b.push(st.keyY, st.keyB, st.keyR);
+  // 差异存储:与初始 MAPS 不同的格(index u8 高位拓展:两字节 idx u16 + char)
+  for (var f = 0; f < MAPS.length; f++) {
+    var g = grids[f], base = MAPS[f];
+    for (var i = 0; i < 121; i++) {
+      var cur = g[(i / 11) | 0][i % 11], orig = base[(i / 11) | 0][i % 11];
+      if (cur !== orig) { b.push(f, i >> 8, i & 255, cur.charCodeAt(0)); }
+    }
+  }
+  b.push(255);
+  try { save(new Uint8Array(b)); } catch (e) { }
+}
+function loadSave() {
+  var d = load();
+  if (!d || d.length < 12 || d[0] !== 77 || d[1] !== 84) return false;
+  try {
+    var i = 2;
+    floor = d[i++]; px = d[i++]; py = d[i++]; maxFloor = d[i++] || floor;
+    fairy1 = d[i++] === 1; warpWing = d[i++] === 1;
+    var r16 = function () { var v = d[i] | (d[i + 1] << 8); i += 2; return v; };
+    st = { hp: r16(), atk: r16(), def: r16(), gold: r16(), keyY: d[i++], keyB: d[i++], keyR: d[i++] };
+    grids = MAPS.map(function (m) { return m.slice(); });
+    while (i < d.length && d[i] !== 255) {
+      var f = d[i++], idx = (d[i++] << 8) | d[i++];
+      var ch = String.fromCharCode(d[i++]);
+      grids[f][(idx / 11) | 0] = grids[f][(idx / 11) | 0].slice(0, idx % 11) + ch + grids[f][(idx / 11) | 0].slice(idx % 11 + 1);
+    }
+    return true;
+  } catch (e) { return false; }
+}
+function hasSave() { return !!load(); }
+function clearSave() { }
+
+function startRun(fresh) {
+  if (fresh || !loadSave()) {
+    grids = MAPS.map(function (m) { return m.slice(); });
+    floor = 0;
+    var p = findTile(0, 'x') || [1, 8];
+    px = p[0]; py = p[1];
+    st = newState();
+    fairy1 = false; warpWing = false; maxFloor = 0;
+  }
+  msg = ''; msgT = 0;
+  battle = null; shopSel = 0; warpSel = 0; dlgLines = null;
+  holdT = 0; lastMove = -99; paused = false;
+  scene = 'play';
+  rebuildMap();
+  say('FLOOR ' + (floor + 1));
+  persist();
+}
+
+/* —— 交互 —— */
+function tryMove(dx, dy) {
+  var nx = px + dx, ny = py + dy;
+  if (nx < 0 || nx >= MW || ny < 0 || ny >= MH) return;
+  var ch = tileAt(floor, nx, ny);
+  if (ch === '#') return;
+  if (DOORS[ch]) {
+    var key = DOORS[ch];
+    if (st[key] > 0) {
+      st[key]--;
+      setTile(floor, nx, ny, '.');
+      say(DOOR_CN[ch] + ' DOOR OPEN');
+      A.playSfx(0);
+    } else say('NEED ' + DOOR_CN[ch] + ' KEY');
+    return;
+  }
+  if (MON[ch]) {
+    battle = { x: nx, y: ny, id: ch, fc: forecast(ch), anim: 0 };
+    scene = 'battle';
+    return;
+  }
+  if (ch === 'y') {
+    if (floor === 4 && !fairy1) { dlgLines = ['FAIRY: BRAVE HERO...', 'TAKE THIS BLESSING', 'HP +1000']; dlgGrant = 'fairy1'; }
+    else if (floor === 8 && !warpWing) { dlgLines = ['FAIRY: TAKE THE WARP WING', 'PRESS X ON STAIRS', 'TO FLY ANY FLOOR']; dlgGrant = 'warp'; }
+    else { dlgLines = ['FAIRY: THE DEVIL WAITS', 'ON THE 21ST FLOOR...']; dlgGrant = null; }
+    dlgIdx = 0; scene = 'dialog';
+    return;
+  }
+  if (ch === '$') { scene = 'shop'; shopSel = 0; return; }
+  px = nx; py = ny;
+  if (ITEMS[ch]) {
+    ITEMS[ch].fn(st);
+    setTile(floor, nx, ny, '.');
+    say(ITEMS[ch].msg);
+    A.playSfx(2);
+  }
+  if (ch === '<') { goFloor(floor + 1, '>'); return; }
+  if (ch === '>') { goFloor(floor - 1, '<'); return; }
+}
+function resolveBattleWin() {
+  var b = battle, m = MON[b.id];
+  st.hp -= b.fc.dmg;
+  st.gold += m.gold;
+  setTile(floor, b.x, b.y, '.');
+  px = b.x; py = b.y;
+  if (b.id === 'L') { scene = 'ending'; battle = null; A.playSfx(5); return; }
+  say(m.gold ? 'WIN +' + m.gold + 'G' : 'WIN');
+  A.playSfx(4);
+  persist();
+  battle = null; scene = 'play';
+}
+
+/* —— 每帧 —— */
+function update() {
+  t++;
+  if (msgT > 0) msgT--;
+  var jp = function (k) { return pad[k].pressed; };
+
+  if (scene === 'title') {
+    var n = hasSave() ? 2 : 1;
+    if (pad.down.pressed) shopSel = (shopSel + 1) % n;
+    if (pad.up.pressed) shopSel = (shopSel + n - 1) % n;
+    if (pad.a.pressed || pad.start.pressed) { startRun(!hasSave() || shopSel === 0); A.playSfx(0); }
+    return;
+  }
+  if (scene === 'ending') {
+    if (pad.start.pressed || pad.a.pressed) { scene = 'title'; shopSel = 0; }
+    return;
+  }
+  if (paused) { if (pad.start.pressed) paused = false; return; }
+  if (pad.start.pressed && scene === 'play') { paused = true; return; }
+
+  if (scene === 'play') {
+    var dx = 0, dy = 0;
+    if (pad.left.down) dx = -1; else if (pad.right.down) dx = 1;
+    if (pad.up.down) dy = -1; else if (pad.down.down) dy = 1;
+    if (dx || dy) {
+      holdT++;
+      if (jp('left') || jp('right') || jp('up') || jp('down') || holdT > 10) {
+        if (t - lastMove >= (holdT > 10 ? 5 : 0)) { tryMove(dx || 0, dy || 0); lastMove = t; }
+      }
+    } else holdT = 0;
+    var here = tileAt(floor, px, py);
+    if (warpWing && (here === '<' || here === '>') && pad.b.pressed) { warpSel = 0; scene = 'warp'; }
+    return;
+  }
+  if (scene === 'battle') {
+    var b = battle;
+    if (b.anim > 0) {
+      b.anim--;
+      if (b.anim === 0) resolveBattleWin();
+      return;
+    }
+    if (pad.b.pressed || pad.left.pressed || pad.right.pressed || pad.up.pressed || pad.down.pressed) {
+      battle = null; scene = 'play'; return;
+    }
+    if (pad.a.pressed && !b.fc.no && b.fc.dmg < st.hp) { b.anim = 26; shakeT = 10; }
+    else if (pad.a.pressed) say('CANT FIGHT THAT');
+    return;
+  }
+  if (scene === 'shop') {
+    if (pad.up.pressed) shopSel = (shopSel + 2) % 3;
+    if (pad.down.pressed) shopSel = (shopSel + 1) % 3;
+    if (pad.b.pressed) { scene = 'play'; persist(); return; }
+    if (pad.a.pressed) {
+      if (st.gold >= 100) {
+        st.gold -= 100;
+        if (shopSel === 0) { st.hp += 600; say('HP +600'); }
+        else if (shopSel === 1) { st.atk += 4; say('ATK +4'); }
+        else { st.def += 4; say('DEF +4'); }
+        A.playSfx(2);
+      } else say('NOT ENOUGH GOLD');
+    }
+    return;
+  }
+  if (scene === 'dialog') {
+    if (pad.a.pressed || pad.b.pressed) {
+      if (dlgIdx + 3 < dlgLines.length) dlgIdx += 3;
+      else {
+        if (dlgGrant === 'fairy1') { fairy1 = true; st.hp += 1000; say('HP +1000'); }
+        else if (dlgGrant === 'warp') { warpWing = true; say('GOT WARP WING'); }
+        A.playSfx(2);
+        persist();
+        scene = 'play';
+      }
+    }
+    return;
+  }
+  if (scene === 'warp') {
+    var maxF = Math.max(1, Math.min(MAPS.length, (maxFloor != null ? maxFloor : floor) + 1));
+    if (pad.b.pressed) { scene = 'play'; return; }
+    if (pad.left.pressed) warpSel = Math.max(0, warpSel - 1);
+    if (pad.right.pressed) warpSel = Math.min(maxF - 1, warpSel + 1);
+    if (pad.up.pressed) warpSel = Math.max(0, warpSel - 5);
+    if (pad.down.pressed) warpSel = Math.min(maxF - 1, warpSel + 5);
+    if (pad.a.pressed && warpSel !== floor) {
+      var to = warpSel;
+      floor = to;
+      maxFloor = Math.max(maxFloor, to);
+      var p = findTile(to, '<') || findTile(to, '>');
+      px = p[0]; py = p[1];
+      rebuildMap();
+      say('FLOOR ' + (to + 1));
+      persist();
+      scene = 'play';
+    }
+    return;
+  }
+}
+
+/* —— 绘制 —— */
+var shakeT = 0;
+function draw() {
+  // OAM:实体 + 主角(帧首已自动清)
+  if (scene !== 'title' && scene !== 'ending') {
+    var i = 0;
+    for (var k = 0; k < ents.length && i < 127; k++) {
+      var e = ents[k];
+      S.setSprite(i++, { x: e.x * 16 + 2, y: e.y * 16 + 2, tile: e.tile, prio: 2 });
+    }
+    S.setSprite(i, { x: px * 16 + 2, y: py * 16 + 2, tile: SPR.hero, prio: 3 });
+    S.scroll(0, shakeT > 0 ? ((t & 1) * 2 - 1) : 0, shakeT > 0 ? ((t & 1) * 2 - 1) : 0);
+    if (shakeT > 0) shakeT--;
+    drawSidebar();
+    if (msgT > 0 && (msgT >= 20 || (t & 3) < 2))
+      bios.text(Math.max(0, (SIDEX - msg.length * 12) / 2) | 0, 4, msg, { color: P.YELLOW });
+  }
+  if (scene === 'battle' && battle) drawBattle();
+  if (scene === 'shop') drawShop();
+  if (scene === 'dialog') drawDialog();
+  if (scene === 'warp') drawWarp();
+  if (scene === 'title') drawTitle();
+  if (scene === 'ending') drawEnding();
+  if (paused) {
+    bios.text(84, 80, 'PAUSED', { color: P.WHITE });
+    bios.text(66, 94, 'ENTER:RESUME', { color: P.SLATE });
+  }
+}
+function drawSidebar() {
+  bios.text(182, 4, 'FLOOR', { color: P.SLATE });
+  bios.text(182, 16, String(floor + 1), { color: P.WHITE });
+  bios.text(182, 32, 'HP', { color: P.SLATE });
+  bios.text(182, 44, String(st.hp), { color: st.hp < 1000 ? P.RED : P.GREEN });
+  bios.text(182, 58, 'ATK', { color: P.SLATE });
+  bios.text(182, 70, String(st.atk), { color: P.RED });
+  bios.text(182, 84, 'DEF', { color: P.SLATE });
+  bios.text(182, 96, String(st.def), { color: P.BLUE });
+  bios.text(182, 110, 'GOLD', { color: P.SLATE });
+  bios.text(182, 122, String(st.gold), { color: P.GOLD });
+  bios.text(182, 136, 'Y' + st.keyY + ' B' + st.keyB + ' R' + st.keyR, { color: P.YELLOW });
+  if (warpWing) bios.text(182, 152, 'WARP:X', { color: P.VIOLET });
+}
+function drawBattle() {
+  var b = battle, m = MON[b.id];
+  bios.text(22, 44, 'VS ' + m.n, { color: P.WHITE });
+  bios.text(22, 60, 'HP ' + m.hp + ' ATK ' + m.atk + ' DEF ' + m.def, { color: P.LGRAY });
+  if (m.first) bios.text(22, 72, 'MAGIC FIRST STRIKE', { color: P.MAGENTA });
+  if (b.anim > 0) {
+    S.setSprite(60, { x: 98, y: 78, tile: SPR[b.id], prio: 3 });
+    bios.text(112, 82, '-' + b.fc.dmg, { color: P.RED });
+    if (b.anim < 16) bios.text(60, 46, 'WIN!', { color: P.GOLD });
+    return;
+  }
+  if (b.fc.no) {
+    bios.text(22, 84, 'CANT WIN!', { color: P.RED });
+    bios.text(22, 98, 'ATK TOO LOW', { color: P.SLATE });
+  } else {
+    bios.text(22, 84, 'ROUNDS ' + b.fc.rounds, { color: P.CYAN });
+    var fatal = b.fc.dmg >= st.hp;
+    bios.text(22, 98, 'LOSE ' + b.fc.dmg + ' HP', { color: fatal ? P.RED : (b.fc.dmg > st.hp * 0.4 ? P.ORANGE : P.LGRAY) });
+    if (fatal) bios.text(22, 112, 'FATAL! REFUSE', { color: P.RED });
+  }
+  bios.text(66, 124, 'Z:FIGHT X:RUN', { color: P.YELLOW });
+}
+function drawShop() {
+  bios.text(92, 38, 'SHOP', { color: P.GOLD });
+  bios.text(130, 38, 'GOLD ' + st.gold, { color: P.YELLOW });
+  var opts = ['HP +600', 'ATK +4', 'DEF +4'];
+  for (var i = 0; i < 3; i++)
+    bios.text(52, 54 + i * 14, (i === shopSel ? '> ' : '  ') + opts[i] + ' :100G', { color: i === shopSel ? P.WHITE : P.LGRAY });
+  bios.text(24, 106, 'Z:BUY  X:LEAVE', { color: P.SLATE });
+}
+function drawDialog() {
+  var y = 130;
+  var lines = dlgLines.slice(dlgIdx, dlgIdx + 3);
+  for (var i = 0; i < lines.length; i++) {
+    bios.text(Math.max(0, (240 - lines[i].length * 12) / 2) | 0, y, lines[i], { color: P.WHITE });
+    y += 13;
+  }
+  if ((t % 30) < 20) bios.text(116, 166, 'Z', { color: P.YELLOW });
+}
+function drawWarp() {
+  bios.text(82, 40, 'WARP WING', { color: P.CYAN });
+  var maxF = Math.max(1, Math.min(MAPS.length, (maxFloor != null ? maxFloor : floor) + 1));
+  for (var f = 0; f < maxF; f++) {
+    var col = f % 5, row = (f / 5) | 0;
+    bios.text(66 + col * 36, 60 + row * 16, String(f + 1), { color: f === warpSel ? P.YELLOW : P.CYAN });
+  }
+  bios.text(84, 130, 'Z:FLY X:STAY', { color: P.YELLOW });
+}
+function drawTitle() {
+  bios.text(66, 12, 'MAGIC', { color: P.YELLOW, scale: 2 });
+  bios.text(66, 34, 'TOWER', { color: P.GOLD, scale: 2 });
+  var opts = hasSave() ? ['NEW GAME', 'CONTINUE'] : ['NEW GAME'];
+  for (var i = 0; i < opts.length; i++)
+    bios.text(84, 66 + i * 14, (i === shopSel ? '> ' : '') + opts[i], { color: i === shopSel ? P.WHITE : P.SLATE });
+  bios.text(24, 100, '21 FLOORS OF MATH', { color: P.SLATE });
+  if ((t % 60) < 38) bios.text(90, 118, 'PRESS Z', { color: P.CYAN });
+  bios.text(6, 138, 'ARROWS MOVE Z FIGHT X CANCEL', { color: P.DGRAY });
+  bios.text(12, 152, 'X ON STAIRS: WARP', { color: P.DGRAY });
+}
+function drawEnding() {
+  bios.text(42, 20, 'DEVIL IS DEAD', { color: P.RED });
+  bios.text(24, 44, 'PRINCESS: THANK YOU', { color: P.PINK });
+  bios.text(96, 60, 'HP ' + st.hp, { color: P.GREEN });
+  bios.text(66, 74, 'ATK ' + st.atk + ' DEF ' + st.def, { color: P.LGRAY });
+  bios.text(60, 96, 'TOWER CLEARED!', { color: P.GOLD });
+  if ((t % 60) < 38) bios.text(84, 130, 'PRESS START', { color: P.WHITE });
+}
+
+function init() {
+  S.loadTiles('bg', cart.seg('tilesbg', 0).data, 0);
+  S.loadTiles('obj', cart.seg('tilesobj', 0).data, 0);
+  S.backdrop(P.INK);
+  scene = 'title';
+  shopSel = 0;
+  grids = MAPS.map(function (m) { return m.slice(); });
+  st = newState();
+  floor = 0; px = 1; py = 8;
+  fairy1 = false; warpWing = false; maxFloor = 0;
+  msg = ''; msgT = 0; paused = false;
+  battle = null; dlgLines = null;
+  holdT = 0; lastMove = -99;
+  rebuildMap();
+}
+
+// 帧钩子:逻辑 + 绘制(OAM 写回 + bios 文本覆盖)
+var _stepRef = update;
+update = function () { _stepRef(); draw(); };

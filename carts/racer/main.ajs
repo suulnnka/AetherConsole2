@@ -1,0 +1,335 @@
+/* carts/racer/main.ajs — AETHER GP(AC1 移植 · 模式2)
+ * 扫描线透视路面 → R.rect 逐行;精灵按 z 反投影。240×176(地平线 60)。
+ * 检查点续时/擦身加分/三主题照搬 AC1。
+ */
+var P = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+
+var W = 240, H = 176, HZN = 60, DYMAX = H - 1 - HZN;
+var CAMD = 620, CP_DIST = 2800;
+var THEMES = [
+  { sky: P.SKYD, gA: P.GAD, gB: P.GBD, mtF: P.MTFD, mtN: P.MTND, sun: P.YELLOW, night: false },
+  { sky: P.SKYU, gA: P.GAU, gB: P.GBU, mtF: P.MTFU, mtN: P.MTNU, sun: P.RED, night: false },
+  { sky: P.SKYN, gA: P.GAN, gB: P.GBN, mtF: P.MTFN, mtN: P.MTNN, sun: P.WHITE, night: true }
+];
+var CAR_CI = [P.RED, P.GREEN, P.YELLOW, P.ICE, P.ORANGE, P.VIOLET];
+
+var scene, paused, freeze, flashT, flashCi;
+var camZ, v, playerX, steer, curveS, sections, secIdx, bgX;
+var time, score, cpNext, cpDone, stage, bannerT, bannerA, bannerB, bannerCi;
+var cars, pylons, gates, parts, pops, crashT, nearT, startT, overT, best;
+var cxAt, t = 0;
+
+function burst(x, y, n, ci, sp) {
+  for (var i = 0; i < n; i++) {
+    var a = rng() * 6.2832, s = sp * (0.3 + rng() * 0.7);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s * 0.7, ci: ci, life: 12 + rng() * 14 | 0 });
+  }
+}
+function pop(txt, x, y, ci) { pops.push({ t: txt, x: x, y: y, ci: ci, life: 46 }); }
+function genSection(z) {
+  var mag = Math.min(1.25, 0.7 + stage * 0.09);
+  var r = rng();
+  var curve = 0, len = 320 + (rng() * 360 | 0);
+  if (r < 0.34) curve = 0;
+  else if (r < 0.62) curve = (0.28 + rng() * 0.22) * (rng() < 0.5 ? 1 : -1);
+  else if (r < 0.85) curve = (0.55 + rng() * 0.25) * (rng() < 0.5 ? 1 : -1);
+  else { curve = (0.8 + rng() * 0.2) * (rng() < 0.5 ? 1 : -1); len = 240 + (rng() * 180 | 0); }
+  return { curve: curve * mag, len: len, start: z };
+}
+function ensureSections() {
+  var last = sections[sections.length - 1];
+  while (last.start + last.len < camZ + 900) {
+    last = genSection(last.start + last.len);
+    sections.push(last);
+  }
+  while (sections[secIdx] && camZ >= sections[secIdx].start + sections[secIdx].len) secIdx++;
+}
+function genPylons() {
+  var lastZ = pylons.length ? pylons[pylons.length - 1].z : 40;
+  while (lastZ < camZ + 700) {
+    lastZ += 46;
+    pylons.push({ z: lastZ, side: (pylons.length & 1) ? 1 : -1 });
+  }
+  while (pylons.length && pylons[0].z < camZ - 30) pylons.shift();
+}
+function spawnCar() {
+  var lane = rng() * 1.24 - 0.62;
+  for (var i = 0; i < cars.length; i++)
+    if (cars[i].lane > lane - 0.24 && cars[i].lane < lane + 0.24 && Math.abs(cars[i].z - (camZ + 300)) < 60) return;
+  cars.push({ z: camZ + 280 + rng() * 260, lane: lane, spd: 2.6 + rng() * 1.6 + stage * 0.12, ci: CAR_CI[(rng() * 6) | 0], passed: false, minDiff: 9 });
+}
+function resetRun() {
+  scene = 'play'; paused = false;
+  camZ = 0; v = 0; playerX = 0; steer = 0; curveS = 0;
+  sections = [{ curve: 0, len: 420, start: 0 }]; secIdx = 0;
+  ensureSections();
+  pylons = []; genPylons();
+  cars = []; gates = []; parts = []; pops = [];
+  time = 50; score = 0; cpNext = CP_DIST; cpDone = 0; stage = 1;
+  crashT = 0; nearT = 0; freeze = 0; flashT = 0;
+  bannerT = 0; startT = 150; overT = 0; bgX = 0;
+}
+function doCrash(car) {
+  crashT = 55; freeze = 6; flashT = 4; flashCi = P.RED;
+  v *= 0.28;
+  burst(120, 148, 22, P.ORANGE, 3);
+  burst(120, 148, 8, P.WHITE, 2);
+  pop('CRASH!', 96, 120, P.RED);
+  A.playSfx(4);
+  car.z = camZ - 30;
+}
+function updatePlay() {
+  t++;
+  if (bannerT > 0) bannerT--;
+  if (flashT > 0) flashT--;
+  if (nearT > 0) nearT--;
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.12;
+    if (--p.life <= 0) parts.splice(i, 1);
+  }
+  for (var j = pops.length - 1; j >= 0; j--) if (--pops[j].life <= 0) pops.splice(j, 1);
+  if (freeze > 0) { freeze--; return; }
+  if (startT > 0) {
+    startT--;
+    if (startT === 0) { bannerT = 40; bannerA = 'GO!'; bannerB = ''; bannerCi = P.GREEN; A.playSfx(0); }
+    return;
+  }
+  var vmax = Math.min(8.2, 6.5 + stage * 0.16);
+  if (crashT > 0) crashT--;
+  if (pad.up.down && crashT <= 0) v += 0.058;
+  else if (pad.down.down) v *= 0.93;
+  else v *= 0.994;
+  var off = Math.abs(playerX) > 1.02;
+  if (off) {
+    v = Math.min(v, 3.4);
+    v *= 0.975;
+    if (v > 0.8 && t % 3 === 0) burst(120 + playerX * 28, 164, 2, THEMES[(stage - 1) % 3].gA, 1.6);
+  }
+  v = Math.max(0, Math.min(v, off ? 3.4 : vmax));
+  var dir = (pad.right.down ? 1 : 0) - (pad.left.down ? 1 : 0);
+  steer += (dir - steer) * 0.25;
+  playerX += steer * 0.026 * (0.35 + v / 6);
+  playerX -= curveS * v * 0.0125;
+  playerX = Math.max(-1.55, Math.min(1.55, playerX));
+  camZ += v;
+  bgX -= curveS * v * 0.6;
+  ensureSections();
+  curveS += (sections[secIdx].curve - curveS) * 0.05;
+  genPylons();
+  time -= 1 / 60;
+  if (camZ >= cpNext) {
+    cpNext += CP_DIST;
+    cpDone++;
+    time = Math.min(60, time + 12);
+    score += 500;
+    gates.push({ z: camZ + 30, tt: 0 });
+    bannerT = 80; bannerA = 'CHECKPOINT'; bannerB = 'TIME +12'; bannerCi = P.CYAN;
+    flashT = 2; flashCi = P.WHITE;
+    pop('+500', 104, 96, P.GOLD);
+    A.playSfx(2);
+    var ns = 1 + (cpDone >> 1);
+    if (ns > stage) {
+      stage = ns;
+      bannerT = 110; bannerA = 'STAGE ' + stage; bannerB = 'FASTER TRAFFIC'; bannerCi = P.YELLOW;
+    }
+  }
+  for (var g = gates.length - 1; g >= 0; g--)
+    if (++gates[g].tt > 90 || gates[g].z < camZ - 20) gates.splice(g, 1);
+  if (time <= 0) {
+    time = 0;
+    writeSave();
+    scene = 'over'; overT = 0;
+    return;
+  }
+  var want = Math.min(9, 4 + stage);
+  if (cars.length < want && rng() < 0.06) spawnCar();
+  for (var c = cars.length - 1; c >= 0; c--) {
+    var car = cars[c];
+    car.z += car.spd;
+    var zRel = car.z - camZ;
+    var diff = Math.abs(playerX - car.lane);
+    if (zRel < 40 && zRel > -10) car.minDiff = Math.min(car.minDiff, diff);
+    if (crashT <= 0 && zRel > 1 && zRel < 11 && diff < 0.17 && v > 0.6) doCrash(car);
+    else if (zRel <= 1 && !car.passed) {
+      car.passed = true;
+      if (car.minDiff < 0.36) { score += 100; nearT = 40; pop('CLOSE! +100', 92, 118, P.ICE); A.playSfx(0); }
+    }
+    if (zRel < -60 || zRel > 700) cars.splice(c, 1);
+  }
+}
+/* —— 绘制 —— */
+function drawWorld() {
+  var th = THEMES[(stage - 1) % 3];
+  R.clear(th.sky);
+  if (th.night)
+    for (var i = 0; i < 40; i++)
+      R.pset((i * 61 + 17) % W, (i * 37) % (HZN - 8), (i % 3) ? P.SLATE : P.LGRAY);
+  var sunX = ((-bgX * 0.25 + 300) % (W + 80) + W + 80) % (W + 80) - 40;
+  R.rect(sunX - 4, 20, 9, 9, th.sun);
+  R.rect(sunX - 2, 18, 5, 13, th.sun);
+  R.rect(sunX - 6, 22, 13, 5, th.sun);
+  for (var x = 0; x < W; x++) {
+    var hF = Math.max(2, (15 + 11 * Math.sin((x + bgX * 0.4) * 0.017) + 6 * Math.sin((x + bgX * 0.4) * 0.043 + 1.7) + 3 * Math.sin((x + bgX * 0.4) * 0.089 + 4.2)) | 0);
+    R.rect(x, HZN - hF, 1, hF, th.mtF);
+  }
+  for (var x2 = 0; x2 < W; x2++) {
+    var hN = Math.max(1, (8 + 6 * Math.sin((x2 + bgX) * 0.029 + 2.3) + 4 * Math.sin((x2 + bgX) * 0.067 + 0.6)) | 0);
+    R.rect(x2, HZN - hN, 1, hN, th.mtN);
+  }
+  // 路面扫描线
+  var cx = W / 2, dx = 0;
+  for (var dy = DYMAX; dy >= 1; dy--) {
+    var y = HZN + dy;
+    cxAt[dy] = cx;
+    dx += curveS * 0.009;
+    cx += dx;
+    var wz = camZ + CAMD / dy;
+    var par = ((wz / 14) | 0) & 1;
+    var hw = dy * 0.98;
+    R.rect(0, y, W, 1, par ? th.gA : th.gB);
+    var rw = Math.max(1, dy * 0.13);
+    R.rect(cx - hw, y, hw * 2, 1, par ? P.ROADA : P.ROADB);
+    R.rect(cx - hw - rw, y, rw, 1, par ? P.RED : P.WHITE);
+    R.rect(cx + hw, y, rw, 1, par ? P.RED : P.WHITE);
+    if (par && dy > 7) {
+      R.rect(cx - hw / 3, y, 1, 1, P.LGRAY);
+      R.rect(cx + hw / 3, y, 1, 1, P.LGRAY);
+    }
+  }
+  // 精灵(远→近)
+  var sprites = [];
+  for (var p2 = 0; p2 < pylons.length; p2++) {
+    var zRel = pylons[p2].z - camZ;
+    if (zRel > 3 && zRel < 620) sprites.push({ z: zRel, kind: 'pylon', side: pylons[p2].side });
+  }
+  for (var g2 = 0; g2 < gates.length; g2++) {
+    var zRel2 = gates[g2].z - camZ;
+    if (zRel2 > 3 && zRel2 < 620) sprites.push({ z: zRel2, kind: 'gate', tt: gates[g2].tt });
+  }
+  for (var c2 = 0; c2 < cars.length; c2++) {
+    var zRel3 = cars[c2].z - camZ;
+    if (zRel3 > 2 && zRel3 < 620) sprites.push({ z: zRel3, kind: 'car', lane: cars[c2].lane, ci: cars[c2].ci, blink: crashT > 0 && cars[c2].z < camZ + 40 });
+  }
+  sprites.sort(function (a, b) { return b.z - a.z; });
+  for (var s = 0; s < sprites.length; s++) {
+    var sp = sprites[s];
+    var dy2 = Math.max(1, Math.min(DYMAX, CAMD / sp.z));
+    var y2 = HZN + dy2;
+    var cx2 = cxAt[dy2 | 0];
+    var hw2 = dy2 * 0.98;
+    if (sp.kind === 'pylon') {
+      var h = Math.max(2, dy2 * 0.09 | 0), pw = dy2 > 40 ? 2 : 1;
+      var px2 = cx2 + sp.side * (hw2 + dy2 * 0.16);
+      R.rect(px2, y2 - h, pw, h, P.LGRAY);
+      R.rect(px2, y2 - h, pw, Math.max(1, h * 0.3) | 0, P.RED);
+    } else if (sp.kind === 'gate') {
+      var ph = Math.max(8, dy2 * 0.5 | 0), pw2 = Math.max(1, dy2 * 0.05 | 0);
+      var half = hw2 + 4;
+      R.rect(cx2 - half, y2 - ph, pw2, ph, P.WHITE);
+      R.rect(cx2 + half, y2 - ph, pw2, ph, P.WHITE);
+      R.rect(cx2 - half, y2 - ph, half * 2, Math.max(2, ph * 0.22) | 0, P.CYAN);
+    } else {
+      drawTraffic(cx2 + sp.lane * hw2, y2, dy2 / DYMAX, sp.ci, sp.blink);
+    }
+  }
+}
+function drawTraffic(x, y, s, ci, blink) {
+  var w = Math.max(4, (18 * s) | 0), h = Math.max(3, (11 * s) | 0);
+  x |= 0; y |= 0;
+  if (blink && (t % 8) < 4) return;
+  R.rect(x - (w >> 1) - 1, y - h * 0.3, 2, Math.max(1, h * 0.35 | 0), P.INK);
+  R.rect(x + (w >> 1) - 1, y - h * 0.3, 2, Math.max(1, h * 0.35 | 0), P.INK);
+  R.rect(x - (w >> 1), y - h, w, h, ci);
+  R.rect(x - w * 0.32, y - h, w * 0.64, Math.max(1, h * 0.35 | 0), P.INK);
+  R.rect(x - (w >> 1) + 1, y - 2, Math.max(1, w * 0.16) | 0, 1, P.RED);
+  R.rect(x + (w >> 1) - 1 - Math.max(1, w * 0.16) | 0, y - 2, Math.max(1, w * 0.16) | 0, 1, P.RED);
+}
+function drawPlayer() {
+  var x = 120, y = 146;
+  var bounce = v > 5 ? ((t % 6 < 3) ? 1 : 0) : 0;
+  var lean = (steer * 2) | 0;
+  var yy = y + bounce;
+  if (crashT > 0 && (t % 8) < 4) return;
+  R.rect(x - 13, yy + 8, 5, 7, P.INK);
+  R.rect(x + 8, yy + 8, 5, 7, P.INK);
+  R.rect(x - 12, yy + 5 - lean, 4, 4, P.INK);
+  R.rect(x + 8, yy + 5 + lean, 4, 4, P.INK);
+  R.rect(x - 11, yy - 6 + lean, 22, 14, P.RED);
+  R.rect(x - 11, yy - 6 + lean, 22, 2, P.ORANGE);
+  R.rect(x - 7, yy - 4 + lean, 14, 4, P.INK);
+  R.rect(x - 15, yy - 8 + lean, 6, 3, P.RED);
+  R.rect(x + 9, yy - 8 + lean, 6, 3, P.RED);
+  R.rect(x - 10, yy + 3, 3, 2, P.YELLOW);
+  R.rect(x + 7, yy + 3, 3, 2, P.YELLOW);
+  if (v > 4 && (t % 4) < 2) R.rect(x - 2, yy + 9, 4, 2, P.ORANGE);
+}
+function draw() {
+  drawWorld();
+  drawPlayer();
+  for (var p = 0; p < parts.length; p++) R.pset(parts[p].x | 0, parts[p].y | 0, parts[p].ci);
+  // HUD
+  var tSec = Math.ceil(time);
+  var tCol = tSec <= 10 ? ((t % 20) < 10 ? P.RED : P.YELLOW) : P.WHITE;
+  bios.text(84, 2, 'TIME ' + ('0' + tSec).slice(-2), { color: tCol });
+  bios.text(4, 2, '' + score, { color: P.GOLD });
+  bios.text(4, 16, 'HI ' + Math.max(best, score), { color: P.SLATE });
+  bios.text(4, 30, 'STAGE ' + stage, { color: P.CYAN });
+  var kmh = (v * 36) | 0;
+  bios.text(168, 2, kmh + ' KMH', { color: v > 7 ? P.RED : P.LGRAY });
+  if (startT > 0) {
+    var n = Math.ceil(startT / 50);
+    var label = n > 3 ? 'READY' : String(Math.min(3, n));
+    bios.text(108, 64, label, { color: n > 3 ? P.WHITE : P.YELLOW, scale: 2 });
+  }
+  if (bannerT > 0 && (bannerT > 16 || (t % 4) < 2)) {
+    bios.text((240 - bannerA.length * 24) / 2 | 0, 56, bannerA, { color: bannerCi, scale: 2 });
+    if (bannerB) bios.text((240 - bannerB.length * 12) / 2 | 0, 78, bannerB, { color: P.LGRAY });
+  }
+  if (scene === 'over') {
+    bios.text(84, 50, 'TIME UP', { color: P.RED, scale: 2 });
+    bios.text(72, 78, 'SCORE ' + score, { color: P.WHITE });
+    bios.text(66, 92, 'STAGE ' + stage + ' CP ' + cpDone, { color: P.LGRAY });
+    bios.text(78, 106, 'BEST ' + best, { color: P.YELLOW });
+    if (overT > 50 && (t % 60) < 38) bios.text(66, 124, 'PRESS START', { color: P.WHITE });
+  }
+  if (paused) bios.text(90, 84, 'PAUSED', { color: P.WHITE, scale: 2 });
+  if (scene === 'title') {
+    bios.text(66, 12, 'AETHER GP', { color: P.GOLD, scale: 2 });
+    bios.text(66, 36, 'FC ROAD RACER', { color: P.CYAN });
+    if (best > 0) bios.text(90, 50, 'BEST ' + best, { color: P.YELLOW });
+    if ((t % 60) < 38) bios.text(66, 96, 'PRESS START', { color: P.WHITE });
+    bios.text(48, 118, 'UP THROTTLE DOWN BRAKE', { color: P.LGRAY });
+    bios.text(60, 130, 'LEFT RIGHT - STEER', { color: P.LGRAY });
+    bios.text(42, 144, 'CHECKPOINTS ADD TIME', { color: P.SLATE });
+  }
+}
+function doUpdate() {
+  t++;
+  if (scene === 'title') { if (pad.start.pressed || pad.a.pressed) resetRun(); return; }
+  if (scene === 'over') {
+    overT++;
+    for (var i = parts.length - 1; i >= 0; i--) if (--parts[i].life <= 0) parts.splice(i, 1);
+    if (overT > 50 && (pad.start.pressed || pad.a.pressed)) scene = 'title';
+    return;
+  }
+  if (pad.start.pressed) paused = !paused;
+  if (paused) return;
+  updatePlay();
+}
+function writeSave() {
+  if (score > best) { best = score; try { save(new Uint8Array([best & 255, (best >> 8) & 255, (best >> 16) & 255])); } catch (e) { } }
+}
+function init() {
+  var d = load();
+  best = d && d.length >= 3 ? d[0] | (d[1] << 8) | (d[2] << 16) : 0;
+  scene = 'title'; paused = false;
+  camZ = 0; v = 0; playerX = 0; steer = 0; curveS = 0;
+  sections = [{ curve: 0, len: 400, start: 0 }]; secIdx = 0;
+  pylons = []; cars = []; gates = []; parts = []; pops = [];
+  time = 50; score = 0; cpNext = CP_DIST; cpDone = 0; stage = 1;
+  crashT = 0; nearT = 0; startT = 0; overT = 0; bgX = 0;
+  cxAt = new Float32Array(DYMAX + 1);
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

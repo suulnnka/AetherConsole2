@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · 模拟器 / 调试器</title>
+<link rel="stylesheet" href="tools.css">
+<style>
+  body { flex-direction: row; align-items: stretch; }
+  main { flex-direction: row; align-items: flex-start; }
+  #left { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 14px; }
+  #scr { image-rendering: pixelated; background: #000; outline: 1px solid #333; width: 480px; height: 352px; cursor: none; }
+  .dtabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .dtabs label { padding: 3px 10px; background: #26262e; border: 1px solid #3a3a48; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .dtabs input { display: none; }
+  .dtabs label:has(input:checked) { background: #2d4a6e; border-color: #3d6391; color: #fff; }
+  .dpane { display: none; }
+  .srcLine { font: 12px monospace; white-space: pre; }
+  .srcLine:hover { background: #20202a; }
+  .srcLine .ln { color: #6f6f80; display: inline-block; width: 34px; text-align: right; margin-right: 6px; }
+  .srcLine .bpmk { cursor: pointer; color: #3a3a48; margin-right: 6px; }
+  .srcLine .bpmk.on { color: #e06c75; }
+  #srcView { max-height: 460px; overflow: auto; }
+  #vpad { display: grid; grid-template-columns: repeat(3, 44px); gap: 4px; }
+  #vpad button { height: 34px; }
+  #hud { font: 12px monospace; }
+  .thumb { display: flex; gap: 8px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>模拟器 / 调试器</h1>
+  <span class="crumb">同一程序:收面板即纯运行器(T14)</span>
+  <span class="spacer"></span>
+  <a href="index.html">← 工具首页</a>
+</header>
+<main>
+  <div id="left">
+    <canvas id="scr"></canvas>
+    <div id="hud"></div>
+    <section>
+      <div class="row">
+        <button id="btnRun" class="primary">▶ 运行</button>
+        <button id="btnPause">⏸ 暂停</button>
+        <button id="btnReset">⟲ 复位</button>
+        <button id="btnStepF">⏭ 单帧</button>
+        <button id="btnStepB">⏪ 步退</button>
+        <label>速度 <select id="speed"><option>1</option><option>2</option><option>4</option><option>8</option></select>×</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnOpen">装载 .aec</button>
+        <input type="file" id="file" accept=".aec" style="display:none">
+        <select id="libSel"></select>
+        <button id="btnLibRefresh">↻</button>
+        <button id="btnPanel">▶ 收起面板(纯运行器)</button>
+      </div>
+    </section>
+    <section>
+      <h2>虚拟手柄(点击注入;键盘 = §9.1 映射)</h2>
+      <div id="vpad">
+        <span></span><button data-k="up">▲</button><span></span>
+        <button data-k="left">◀</button><span></span><button data-k="right">▶</button>
+        <span></span><button data-k="down">▼</button><span></span>
+        <button data-k="b">B</button><span></span><button data-k="a">A</button>
+        <span></span><button data-k="start">START</button><span></span>
+      </div>
+    </section>
+    <section>
+      <h2>调试日志</h2>
+      <pre id="log" style="max-height:140px"></pre>
+    </section>
+  </div>
+
+  <div id="dbgPanel" style="flex:1; display:flex; flex-direction:column; gap:10px;">
+    <div class="dtabs">
+      <label><input type="radio" name="dtab" value="src" checked><span>源码·断点</span></label>
+      <label><input type="radio" name="dtab" value="vram"><span>VRAM</span></label>
+      <label><input type="radio" name="dtab" value="oam"><span>OAM</span></label>
+      <label><input type="radio" name="dtab" value="aram"><span>ARAM·音频</span></label>
+      <label><input type="radio" name="dtab" value="perf"><span>性能</span></label>
+      <label><input type="radio" name="dtab" value="io"><span>输入·录放·导出</span></label>
+      <label><input type="radio" name="dtab" value="clog"><span>print 控制台</span></label>
+    </div>
+
+    <section class="dpane" id="dpane-src">
+      <h2>aJS 源码(点行号旁 ● 设行断点;API 断点在下方)</h2>
+      <div id="srcView"></div>
+      <h2 style="margin-top:10px">API 调用断点</h2>
+      <div id="apiBps" class="row"></div>
+    </section>
+
+    <section class="dpane" id="dpane-vram">
+      <h2>VRAM:BG tileset / OBJ tileset / 位图池</h2>
+      <div class="grid2">
+        <div><div class="muted">BG</div><canvas id="vramBg" class="pixel"></canvas></div>
+        <div><div class="muted">OBJ</div><canvas id="vramObj" class="pixel"></canvas></div>
+      </div>
+      <div class="muted" style="margin-top:8px">位图池(模式2)</div>
+      <div id="vramBmps" class="thumb"></div>
+    </section>
+
+    <section class="dpane" id="dpane-oam">
+      <h2>OAM(画面上青框为精灵覆盖视图)</h2>
+      <table id="oamTable"><thead><tr><th>#</th><th>x</th><th>y</th><th>tile</th><th>size</th><th>flip</th><th>prio</th></tr></thead><tbody></tbody></table>
+      <div class="muted">每线 32 上限丢弃行/帧:<span id="oamDrop"></span></div>
+    </section>
+
+    <section class="dpane" id="dpane-aram">
+      <h2>ARAM / 音频通道</h2>
+      <div id="aramStat" class="muted"></div>
+      <table id="chTable"><thead><tr><th>ch</th><th>role</th><th>音色</th><th>电平</th><th>声部</th></tr></thead><tbody></tbody></table>
+      <div class="row" style="margin-top:8px">
+        <canvas id="audioScope" width="480" height="80" class="pixel"></canvas>
+        <label><input type="checkbox" id="preMulaw"> 旁听编码前线信号(§8.1)</label>
+      </div>
+    </section>
+
+    <section class="dpane" id="dpane-perf">
+      <h2>帧耗时分解(逻辑蓝 / 合成黄 / 音频红;绿线 = 16.67ms 预算)</h2>
+      <canvas id="perfChart" width="480" height="120" class="pixel"></canvas>
+      <div class="muted">超帧只告警不停机(§12.4)。</div>
+    </section>
+
+    <section class="dpane" id="dpane-io">
+      <h2>输入录制 / 回放(确定性,§13.6)</h2>
+      <div class="row">
+        <button id="btnRec">● 开始录制</button>
+        <button id="btnRecStop">■ 结束录制</button>
+        <button id="btnReplay">⟲ 回放(复位+逐帧一致)</button>
+      </div>
+      <h2 style="margin-top:10px">导出</h2>
+      <div class="row">
+        <button id="btnPng">截图 PNG</button>
+        <button id="btnGifRec">● GIF 录屏(≤60s)</button>
+        <button id="btnGifStop">■ 生成 GIF</button>
+        <button id="btnSavExport">导出 .sav</button>
+        <button id="btnSavImport">导入 .sav</button>
+        <input type="file" id="savFile" accept=".sav" style="display:none">
+      </div>
+    </section>
+
+    <section class="dpane" id="dpane-clog">
+      <h2>bios.print 控制台</h2>
+      <pre id="cartLog" style="max-height:420px"></pre>
+    </section>
+  </div>
+</main>
+<script src="../js/core/ansi.js"></script>
+<script src="../js/core/comp.js"></script>
+<script src="../js/core/mulaw.js"></script>
+<script src="../js/core/font.js"></script>
+<script src="../js/core/biosfont.js"></script>
+<script src="../js/core/cart.js"></script>
+<script src="../js/host/input.js"></script>
+<script src="../js/host/mode1.js"></script>
+<script src="../js/host/mode2.js"></script>
+<script src="../js/host/ajs.js"></script>
+<script src="../js/host/audio.js"></script>
+<script src="../js/host/bios.js"></script>
+<script src="../js/host/machine.js"></script>
+<script src="../js/tools/gif.js"></script>
+<script src="../js/tools/debugger.js"></script>
+</body>
+</html>

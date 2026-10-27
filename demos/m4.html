@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · M4 demo — 输入三设备 + 音频 8ch/μ律</title>
+<style>
+  body { background: #16161c; color: #c8c8d0; font: 13px/1.5 monospace; display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 0; padding: 12px; }
+  canvas { image-rendering: pixelated; background: #000; outline: 1px solid #333; cursor: none; }
+  #hud { font: 12px monospace; color: #8f8fa0; }
+  b { color: #fff; }
+</style>
+</head>
+<body>
+<canvas id="scr"></canvas>
+<div id="hud"></div>
+<script src="../js/core/ansi.js"></script>
+<script src="../js/core/comp.js"></script>
+<script src="../js/core/mulaw.js"></script>
+<script src="../js/core/font.js"></script>
+<script src="../js/core/biosfont.js"></script>
+<script src="../js/core/cart.js"></script>
+<script src="../js/host/input.js"></script>
+<script src="../js/host/mode1.js"></script>
+<script src="../js/host/mode2.js"></script>
+<script src="../js/host/ajs.js"></script>
+<script src="../js/host/audio.js"></script>
+<script src="../js/host/machine.js"></script>
+<script src="../js/shell/shell.js"></script>
+<script>
+'use strict';
+const M = new AC2.Machine({});
+M.setMode(2);
+const R = M.R;
+const A = M.A;
+
+// —— 音频数据:双轨小调(FC 锯齿旋律 + 808 鼓)+ 两个 SFX ——
+M.audio.loadAudioData({
+  timbres: [
+    { family: 'fc', wave: 4, adsr: [0.002, 0.06, 0.55, 0.06], vol: 0.32, vib: { rate: 5, depth: 0.04 } },
+    { family: 'fc', wave: 5, adsr: [0.004, 0.1, 0.4, 0.08], vol: 0.4 },
+    { family: 'an', model: 'kick', adsr: [0.001, 0.02, 1, 0.2], vol: 0.7 },
+    { family: 'an', model: 'snare', adsr: [0.001, 0.02, 1, 0.2], vol: 0.5 },
+    { family: 'an', model: 'hat', adsr: [0.001, 0.02, 1, 0.05], vol: 0.35 },
+    { family: 'fm', car: { level: 1, adsr: [0.001, 0.1, 0.6, 0.2], ratio: 1.0 },
+      mod: { level: 5, adsr: [0.001, 0.25, 0.2, 0.15], ratio: 3.01, fb: 2 }, ring: true, vol: 0.3 },
+    { family: 'an', model: '303', w303: 'saw', cutoff303: 300, res: 7, envMod: 3.5, decay303: 0.3, vol: 0.5 }
+  ],
+  patterns: [
+    { t: 0, notes: [
+      { s: 0, n: 69, l: 3 }, { s: 4, n: 72, l: 3 }, { s: 8, n: 76, l: 3 }, { s: 12, n: 74, l: 3 },
+      { s: 16, n: 69, l: 3 }, { s: 20, n: 72, l: 3 }, { s: 24, n: 77, l: 3 }, { s: 28, n: 76, l: 3 },
+      { s: 32, n: 71, l: 3 }, { s: 36, n: 74, l: 3 }, { s: 40, n: 79, l: 3 }, { s: 44, n: 77, l: 3 },
+      { s: 48, n: 71, l: 3 }, { s: 52, n: 74, l: 3 }, { s: 56, n: 81, l: 5 }, { s: 61, n: 79, l: 3 }
+    ], vol: null, fx: [{ type: 'fadeIn', start: 0, end: 4 }] },
+    { t: 2, notes: [{ s: 0, n: 36 }, { s: 8, n: 36 }, { s: 10, n: 36 }, { s: 16, n: 36 }, { s: 24, n: 36 }, { s: 26, n: 36 }, { s: 32, n: 36 }, { s: 40, n: 36 }, { s: 42, n: 36 }, { s: 48, n: 36 }, { s: 56, n: 36 }] },
+    { t: 3, notes: [{ s: 4, n: 38 }, { s: 12, n: 38 }, { s: 20, n: 38 }, { s: 28, n: 38 }, { s: 36, n: 38 }, { s: 44, n: 38 }, { s: 52, n: 38 }, { s: 60, n: 38 }] },
+    { t: 4, notes: [{ s: 2, n: 42 }, { s: 6, n: 42 }, { s: 10, n: 42 }, { s: 14, n: 42 }, { s: 18, n: 42 }, { s: 22, n: 42 }, { s: 26, n: 42 }, { s: 30, n: 42 }, { s: 34, n: 42 }, { s: 38, n: 42 }, { s: 42, n: 42 }, { s: 46, n: 42 }, { s: 50, n: 42 }, { s: 54, n: 42 }, { s: 58, n: 42 }, { s: 62, n: 42 }] },
+    { t: 1, notes: [{ s: 0, n: 45, l: 14 }, { s: 16, n: 45, l: 14 }, { s: 32, n: 43, l: 14 }, { s: 48, n: 45, l: 14 }] },
+    { t: 5, notes: [{ s: 0, n: 93, l: 12 }] },                                   // SFX:铃音(FM ring)
+    { t: 6, notes: [{ s: 0, n: 33, l: 6 }, { s: 6, n: 40, l: 10 }] }              // SFX:303 上滑
+  ],
+  musics: [
+    { bpm: 132, swing: 0.08, tracks: [
+      [{ p: 0, b: 0 }], [{ p: 4, b: 0 }], [{ p: 1, b: 0 }], [{ p: 2, b: 0 }],
+      [{ p: 3, b: 0 }], [], [], []
+    ] }
+  ],
+  samples: {}
+});
+
+const pad = M.input.pad, mouse = M.input.mouse;
+let crossX = 120, crossY = 88, lastSfx = -60;
+
+function update() {
+  const f = M.frame();
+  // 光标:读 dx/dy 相对增量(右摇杆/鼠标滚轮流)积分
+  crossX = Math.max(0, Math.min(239, crossX + mouse.dx));
+  crossY = Math.max(0, Math.min(175, crossY + mouse.dy));
+  // SFX:A 键按下 → 铃音(借道);B 键 → 303
+  if (pad.a.pressed && f - lastSfx > 10) { A.playSfx(5); lastSfx = f; }
+  if (pad.b.pressed && f - lastSfx > 10) { A.playSfx(6); lastSfx = f; }
+  if (pad.start.pressed && f - (M._musicToggled || -999) > 30) {
+    if (M.audio.playing) A.stopTrack(); else A.playTrack(0);
+    M._musicToggled = f;
+  }
+
+  R.clear(16);
+  R.text(6, 6, 'INPUT+AUDIO DEMO', { color: 11 });
+  // 手柄视图面板
+  const keys = [['up', 'UP'], ['down', 'DN'], ['left', 'LF'], ['right', 'RT'], ['a', 'A'], ['b', 'B'], ['start', 'ST']];
+  let x = 6, y = 26;
+  R.text(x, y, 'pad view', { color: 8 });
+  y += 14;
+  for (const [k, label] of keys) {
+    const b = pad[k];
+    const col = b.down ? (b.pressed ? 46 : 51) : 240;
+    if (b.pressed) R.rect(x - 2, y - 2, 44, 14, 240, false);
+    R.text(x + 2, y + 1, label + (b.down ? ' *' : '  ') + (b.released ? 'R' : ' '), { color: col });
+    y += 14;
+  }
+  // 鼠标视图
+  x = 120;
+  R.text(x, 26, 'mouse view', { color: 8 });
+  R.text(x, 40, 'x ' + Math.round(mouse.x), { color: 15 });
+  R.text(x, 52, 'y ' + Math.round(mouse.y), { color: 15 });
+  R.text(x, 64, 'dx ' + mouse.dx.toFixed(1), { color: 15 });
+  R.text(x, 76, 'dy ' + mouse.dy.toFixed(1), { color: 15 });
+  R.text(x, 92, 'left ' + (mouse.left ? 'DOWN' : '-'), { color: mouse.left ? 46 : 240 });
+  R.text(x, 104, 'right ' + (mouse.right ? 'DOWN' : '-'), { color: mouse.right ? 46 : 240 });
+  // 绝对位置小框 + 积分光标
+  R.rect(x, 116, 60, 44, 240, false);
+  R.pset(x + 2 + Math.round((mouse.x + 256) / 752 * 56), 118 + Math.round((mouse.y + 256) / 688 * 40), 51);
+  R.pset(x + 2 + Math.round(crossX / 239 * 56), 118 + Math.round(crossY / 175 * 40), 196);
+  // 十字光标(积分)
+  R.line(crossX - 5, crossY, crossX + 5, crossY, 196, 1);
+  R.line(crossX, crossY - 5, crossX, crossY + 5, 196, 1);
+  // 音频状态
+  R.text(200, 6, M.audio.playing ? 'BGM>' : 'BGM#', { color: M.audio.playing ? 46 : 240 });
+  for (let i = 0; i < 8; i++) {
+    const lv = (M.audio.levels || [])[i] || 0;
+    const h = Math.round(lv * 12);
+    R.rect(200, 26 + i * 16, 30, 12, 236, true);
+    if (h > 0) R.rect(200, 26 + i * 16 + (12 - h), 30, h, 46 + (lv > 0.8 ? 196 : 0), true);
+  }
+  R.text(6, 160, 'A/B=SFX  Start=BGM  mouse/RStick=cursor', { color: 8 });
+}
+
+const shell = new AC2.Shell(document.getElementById('scr'), { machine: M });
+shell.onBeforeStep = () => update();
+A.playTrack(0);
+shell.start();
+const hud = document.getElementById('hud');
+setInterval(() => {
+  hud.innerHTML = 'fps <b>' + shell.fps + '</b> · audio <b>' + M.stats.audioMs.toFixed(2) + 'ms</b>/帧(400 样本) · logic <b>' + M.stats.logicMs.toFixed(2) + 'ms</b> · ARAM <b>' + M.audio.aramBytes + 'B</b>/32768';
+}, 250);
+</script>
+</body>
+</html>

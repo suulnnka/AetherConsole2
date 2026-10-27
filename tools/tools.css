@@ -1,0 +1,48 @@
+/* tools/tools.css — 工具链公共样式 */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: #14141a; color: #c8c8d0;
+  font: 13px/1.55 "Cascadia Mono", Consolas, monospace;
+  display: flex; flex-direction: column;
+}
+header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 14px; background: #1b1b23; border-bottom: 1px solid #2c2c38;
+}
+header h1 { font-size: 15px; margin: 0; color: #e8e8f0; font-weight: 600; }
+header .crumb { color: #6f6f80; font-size: 12px; }
+header a { color: #7aa2f7; text-decoration: none; font-size: 12px; }
+header .spacer { flex: 1; }
+main { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+section {
+  background: #1b1b23; border: 1px solid #2c2c38; border-radius: 6px; padding: 12px;
+}
+section h2 { font-size: 13px; margin: 0 0 10px; color: #e8e8f0; font-weight: 600; }
+button, select, input[type=text], input[type=number] {
+  font: 12px monospace; background: #26262e; color: #cfcfda;
+  border: 1px solid #3a3a48; border-radius: 4px; padding: 5px 10px;
+}
+button { cursor: pointer; }
+button:hover { background: #30303c; }
+button.primary { background: #2d4a6e; border-color: #3d6391; }
+button:disabled { opacity: 0.45; cursor: default; }
+canvas.pixel { image-rendering: pixelated; background: #000; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid #26262e; font-size: 12px; }
+th { color: #8f8fa0; font-weight: normal; }
+pre { background: #101016; border: 1px solid #26262e; padding: 8px; overflow: auto; font-size: 12px; max-height: 220px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.muted { color: #6f6f80; }
+.ok { color: #6ecf8e; }
+.err { color: #e06c75; }
+.warn { color: #d8a657; }
+.dropzone {
+  border: 2px dashed #3a3a48; border-radius: 6px; padding: 26px; text-align: center; color: #8f8fa0;
+}
+.dropzone.active { border-color: #7aa2f7; color: #c8c8d0; background: #1d2330; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+label { font-size: 12px; color: #8f8fa0; }
+input[type=range] { width: 140px; }
+input[type=checkbox] { accent-color: #7aa2f7; }

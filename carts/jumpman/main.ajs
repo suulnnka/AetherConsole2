@@ -1,0 +1,255 @@
+/* carts/jumpman/main.ajs — Jumpman:模式1 平台跳跃(M12 示例卡带一)
+ * 双 BG 卷轴 + OAM 精灵 + tile 碰撞 + 金币/史莱姆/尖刺/旗杆通关 + 存档最佳时间 + BGM/SFX
+ */
+var L, SOLID, W, H;
+var state = 'title', t = 0, stateT = 0;
+var P = {}, cam = 0;
+var coins = [], enemies = [], parts = [];
+var score = 0, frames = 0, best = 999999, deadT = 0, winT = 0;
+
+function init() {
+  S.loadTiles('bg', cart.seg('tilesbg', 0).data, 0);
+  S.loadTiles('obj', cart.seg('tilesobj', 0).data, 0);
+  S.loadMap(0, cart.seg('maps', 0).data, 0);
+  S.backdrop(16);
+  // 碰撞通道(COL1):在 data 段里按 magic 找
+  var col = findCol();
+  var dv = new DataView(col.buffer, col.byteOffset, col.byteLength);
+  var cw = dv.getUint16(4, true), ch = dv.getUint16(6, true);
+  SOLID = new Uint8Array(cw * ch);
+  for (var i = 0; i < cw * ch; i++) SOLID[i] = (col[8 + (i >> 3)] >> (i & 7)) & 1;
+  W = cw; H = ch;
+  // 关卡实体
+  L = JSON.parse(new TextDecoder().decode(findLevel()));
+  var d = load();
+  if (d && d.length >= 4) {
+    best = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24);
+    if (best <= 0 || best > 999998) best = 999999;
+  }
+  A.playSfx(8);     // 开场音(标题态;A 开始时 reset() 内起 BGM)
+}
+function findCol() {
+  var segs = cart.segs('data');
+  for (var i = 0; i < segs.length; i++) if (segs[i].data[0] === 0x43 && segs[i].data[1] === 0x4F) return segs[i].data; // "CO"
+  throw new Error('no COL1 in data segs');
+}
+function findLevel() {
+  var segs = cart.segs('data');
+  for (var i = 0; i < segs.length; i++) if (segs[i].data[0] === 0x7B || segs[i].data[0] === 0x20 || segs[i].data[0] === 0x0A) { // '{' 或空白开头
+    if (segs[i].data[0] === 0x7B) return segs[i].data;
+  }
+  throw new Error('no level.json');
+}
+
+function reset() {
+  P = { x: L.playerStart[0] * 8, y: L.playerStart[1] * 8 - 16, vx: 0, vy: 0, onG: false, coyote: 0, face: 1, anim: 0, inv: 0 };
+  coins = L.coins.map(function (c) { return { x: c[0], y: c[1], got: false }; });
+  enemies = L.enemies.map(function (e) { return { x: e.x, y: e.y, min: e.min, max: e.max, dir: 1, dead: false }; });
+  parts = [];
+  score = 0; frames = 0; cam = 0;
+  state = 'play'; stateT = 0;
+  A.playTrack(0);
+}
+
+function solidAt(px, py) {
+  var tx = (px / 8) | 0, ty = (py / 8) | 0;
+  if (tx < 0 || ty < 0 || tx >= W || ty >= H) return tx < 0 || tx >= W; // 左右为墙,上下开放
+  return SOLID[ty * W + tx] === 1;
+}
+function boxSolid(x, y) { // 16×16 玩家盒
+  return solidAt(x + 1, y + 2) || solidAt(x + 14, y + 2) || solidAt(x + 1, y + 15) || solidAt(x + 14, y + 15);
+}
+
+function die() {
+  if (state !== 'play') return;
+  state = 'dead'; deadT = 0;
+  A.playSfx(7);
+  for (var i = 0; i < 10; i++) parts.push({ x: P.x + 8, y: P.y + 8, vx: Math.cos(i / 10 * 6.28) * 2, vy: Math.sin(i / 10 * 6.28) * 2 - 1, life: 25 });
+}
+
+function update() {
+  t++;
+  if (state === 'title') {
+    if (pad.a.pressed || pad.start.pressed) reset();
+    if (frame() % 480 === 0) A.stopTrack();
+    return;
+  }
+  if (state === 'dead') {
+    if (++deadT > 90 && (pad.a.pressed || deadT > 240)) { state = 'title'; }
+    updateParts();
+    return;
+  }
+  if (state === 'win') {
+    if (++winT > 60 && (pad.a.pressed || winT > 300)) state = 'title';
+    updateParts();
+    return;
+  }
+  frames++;
+  stateT++;
+
+  // ---- 输入 ----
+  var ax = 0;
+  if (pad.left.down) ax -= 0.45;
+  if (pad.right.down) ax += 0.45;
+  if (ax !== 0) P.face = ax > 0 ? 1 : -1;
+  P.vx += ax;
+  P.vx *= 0.82;
+  if (Math.abs(P.vx) < 0.05) P.vx = 0;
+  P.vx = Math.max(-2.4, Math.min(2.4, P.vx));
+  if (P.onG) P.coyote = 7; else if (P.coyote > 0) P.coyote--;
+  if ((pad.a.pressed || pad.up.pressed) && P.coyote > 0) {
+    P.vy = -4.9; P.coyote = 0; P.onG = false;
+    A.playSfx(5);
+  }
+  // 可变跳高:松开提前减速
+  if (!pad.a.down && P.vy < -1.8) P.vy = -1.8;
+  P.vy += 0.32;
+  if (P.vy > 4.5) P.vy = 4.5;
+
+  // ---- X 位移 + 碰撞 ----
+  P.x += P.vx;
+  if (boxSolid(P.x, P.y)) {
+    var step = P.vx > 0 ? -1 : 1;
+    var guard = 0;
+    while (boxSolid(P.x, P.y) && guard++ < 8) P.x += step;
+    P.vx = 0;
+  }
+  // ---- Y 位移 + 碰撞 ----
+  P.y += P.vy;
+  P.onG = false;
+  if (boxSolid(P.x, P.y)) {
+    var sy = P.vy > 0 ? -1 : 1;
+    var g2 = 0;
+    while (boxSolid(P.x, P.y) && g2++ < 9) P.y += sy;
+    if (P.vy > 0) P.onG = true;
+    P.vy = 0;
+  }
+  // 掉坑
+  if (P.y > H * 8 + 24) die();
+
+  // ---- 相机 ----
+  var targetCam = P.x - 96;
+  cam += (targetCam - cam) * 0.15;
+  cam = Math.max(0, Math.min(W * 8 - 240, cam));
+  S.scroll(0, cam | 0, 0);
+
+  // ---- 金币 ----
+  var pcx = P.x + 8, pcy = P.y + 8;
+  for (var ci = 0; ci < coins.length; ci++) {
+    var c = coins[ci];
+    if (c.got) continue;
+    if (Math.abs(c.x - pcx) < 10 && Math.abs(c.y - pcy) < 12) {
+      c.got = true; score += 10;
+      A.playSfx(6);
+      for (var k = 0; k < 5; k++) parts.push({ x: c.x, y: c.y, vx: (rng() - 0.5) * 2, vy: -rng() * 2, life: 15 });
+    }
+  }
+
+  // ---- 敌人(踩踏击杀)----
+  for (var ei = 0; ei < enemies.length; ei++) {
+    var e = enemies[ei];
+    if (e.dead) continue;
+    e.x += e.dir * 0.4;
+    if (e.x < e.min) e.dir = 1;
+    if (e.x > e.max) e.dir = -1;
+    var ex = e.x + 8, ey = e.y + 10;
+    if (Math.abs(ex - pcx) < 12 && Math.abs(ey - pcy) < 14) {
+      if (P.vy > 1 && pcy < ey - 4) {
+        e.dead = true; score += 25; P.vy = -3.4;
+        A.playSfx(6);
+        for (var j = 0; j < 8; j++) parts.push({ x: ex, y: ey, vx: (rng() - 0.5) * 3, vy: -rng() * 2.5, life: 20 });
+      } else die();
+    }
+  }
+
+  // ---- 尖刺 ----
+  for (var si = 0; si < L.spikes.length; si++) {
+    var sp = L.spikes[si];
+    if (Math.abs(sp[0] * 8 + 4 - pcx) < 10 && Math.abs(sp[1] * 8 + 6 - pcy) < 12) die();
+  }
+
+  // ---- 旗杆通关 ----
+  if (Math.abs(L.flag[0] * 8 + 4 - pcx) < 12 && Math.abs(L.flag[1] * 8 + 4 - pcy) < 20) {
+    state = 'win'; winT = 0;
+    var total = score + Math.max(0, 3000 - frames);
+    if (frames < best) {
+      best = frames;
+      save(new Uint8Array([best & 255, (best >> 8) & 255, (best >> 16) & 255, (best >> 24) & 255]));
+    }
+    A.playSfx(8);
+    for (var q = 0; q < 30; q++) parts.push({ x: pcx, y: pcy, vx: (rng() - 0.5) * 5, vy: -rng() * 4, life: 45 });
+  }
+  updateParts();
+  if (P.inv > 0) P.inv--;
+  P.anim += Math.abs(P.vx) * 0.25;
+}
+
+function updateParts() {
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = parts[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--;
+    if (p.life <= 0) parts.splice(i, 1);
+  }
+}
+
+function updateRender() {
+  // ---- 精灵 ----
+  var i2 = 0;
+  if (state === 'play' || state === 'win') {
+    var fr = (P.anim | 0) % 2;
+    S.setSprite(i2++, {
+      x: (P.x - cam) | 0, y: P.y | 0, tile: 4 * fr, big: 1,
+      fh: P.face < 0 ? 1 : 0, prio: 3
+    });
+  }
+  // 金币(动画)
+  var ca = (t >> 3) & 1;
+  for (var ci = 0; ci < coins.length; ci++) {
+    if (coins[ci].got || i2 >= 124) continue;
+    S.setSprite(i2++, { x: ((coins[ci].x - 4 - cam) | 0), y: (coins[ci].y - 4) | 0, tile: 8 + ca, prio: 2 });
+  }
+  for (var ei = 0; ei < enemies.length; ei++) {
+    var e = enemies[ei];
+    if (e.dead || i2 >= 124) continue;
+    S.setSprite(i2++, { x: ((e.x - cam) | 0), y: e.y | 0, tile: 10, big: 1, fh: e.dir < 0 ? 0 : 1, prio: 2 });
+  }
+  // 粒子(小精灵)
+  for (var pi = 0; pi < parts.length && i2 < 128; pi++) {
+    var p = parts[pi];
+    S.setSprite(i2++, { x: ((p.x - cam) | 0), y: p.y | 0, tile: 9, prio: 3 });
+  }
+}
+
+function fmtTime(f) {
+  var s = (f / 60) | 0;
+  return ((s / 60) | 0) + ':' + ('0' + (s % 60)).slice(-2) + '.' + ('0' + ((f % 60 / 6) | 0));
+}
+
+// 绘制挂钩:update 之后每帧调 draw(模式1:BIOS 文本覆盖通道)
+function draw() {
+  updateRender();
+  if (state === 'title') {
+    bios.text(64, 40, 'JUMPMAN', { color: 11, scale: 2 });
+    bios.text(78, 70, 'A / START TO PLAY', { color: 15 });
+    bios.text(72, 90, 'BEST ' + (best < 999999 ? fmtTime(best) : '--:--'), { color: 220 });
+    bios.text(48, 120, 'ARROWS/WASD MOVE  A/Z JUMP', { color: 8 });
+    bios.text(60, 134, 'STOMP SLIMES  REACH FLAG', { color: 8 });
+  } else if (state === 'dead') {
+    bios.text(96, 76, 'OUCH!', { color: 196, scale: 2 });
+    bios.text(66, 104, 'PRESS A TO CONTINUE', { color: 15 });
+  } else if (state === 'win') {
+    bios.text(72, 60, 'COURSE CLEAR!', { color: 46, scale: 1 });
+    bios.text(66, 84, 'TIME ' + fmtTime(frames), { color: 15 });
+    bios.text(60, 98, 'SCORE ' + score, { color: 220 });
+    if (frames >= best) bios.text(72, 116, 'NEW BEST TIME!', { color: 51 });
+    bios.text(66, 136, 'PRESS A FOR TITLE', { color: 8 });
+  } else {
+    bios.text(4, 2, 'SCORE ' + score, { color: 15 });
+    bios.text(150, 2, fmtTime(frames), { color: 220 });
+    if (best < 999999) bios.text(96, 2, 'BEST ' + fmtTime(best), { color: 8 });
+  }
+}
+
+// 帧钩子:逻辑 + 绘制(模式1:精灵在 update 内写回,文本走 bios 覆盖通道)
+var _stepRef = update;
+update = function () { _stepRef(); draw(); };

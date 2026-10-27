@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · 图像编辑器</title>
+<link rel="stylesheet" href="tools.css">
+<style>
+  .modes { display: flex; gap: 6px; }
+  .modes label { padding: 4px 10px; background: #26262e; border: 1px solid #3a3a48; border-radius: 4px; cursor: pointer; }
+  .modes input { display: none; }
+  .modes input:checked + span { color: #fff; }
+  .modes label:has(input:checked) { background: #2d4a6e; border-color: #3d6391; }
+  .toolbar { display: flex; gap: 4px; flex-wrap: wrap; }
+  .toolbar button { padding: 4px 8px; }
+  #palette { overflow-x: auto; }
+  .frames { display: flex; gap: 4px; flex-wrap: wrap; }
+  canvas.pixel { outline: 1px solid #333; cursor: crosshair; }
+  .side { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; }
+  .scrollX { overflow: auto; max-height: 420px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>图像编辑器</h1>
+  <span class="crumb">精灵(8/16)· 地图(8px 网格 + 碰撞)· 自由(自选画布 + PNG 量化)</span>
+  <span class="spacer"></span>
+  <a href="index.html">← 工具首页</a>
+</header>
+<main>
+  <section>
+    <div class="row">
+      <div class="modes">
+        <label><input type="radio" name="mode" value="sprite" checked><span>精灵绘制</span></label>
+        <label><input type="radio" name="mode" value="map"><span>地图绘制</span></label>
+        <label><input type="radio" name="mode" value="free"><span>自由绘制</span></label>
+      </div>
+      <span class="spacer" style="flex:1"></span>
+      <div class="toolbar">
+        <button id="pen" class="tool primary">✏ 铅笔</button>
+        <button id="era" class="tool">◧ 透明</button>
+        <button id="fill" class="tool" disabled title="待实现">填充</button>
+        <button id="dither" class="tool">▚ 抖动笔刷</button>
+        <button id="undo">↶ 撤销</button>
+        <button id="redo">↷ 重做</button>
+        <label><input type="checkbox" id="showGrid" checked> 网格</label>
+        <label>缩放 <input type="range" id="zoom" min="4" max="20" value="8"></label>
+      </div>
+    </div>
+  </section>
+
+  <div class="side">
+    <div>
+      <!-- 精灵 -->
+      <section id="paneSprite">
+        <h2>精灵绘制(规格二选一:8×8 / 16×16,T13)</h2>
+        <div class="row" style="margin-bottom:8px">
+          <button id="spNew8">新建 8×8</button>
+          <button id="spNew16">新建 16×16</button>
+          <button id="spAddF">+ 复制帧</button>
+          <button id="spDelF">− 删帧</button>
+          <label>动画 fps <input type="range" id="spAnim" min="1" max="24" value="6"></label>
+          <label><input type="checkbox" id="spOnion" checked> 洋葱皮</label>
+          <button id="spExport" class="primary">导出 .til(OBJ tileset)</button>
+        </div>
+        <div class="row" style="align-items:flex-start">
+          <div class="scrollX"><canvas id="spCanvas" class="pixel"></canvas></div>
+          <div class="col">
+            <div class="frames" id="spFrames"></div>
+            <div>预览(fps)<div id="previewWrap"><canvas id="spPreview" class="pixel"></canvas></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 地图 -->
+      <section id="paneMap" style="display:none">
+        <h2>地图绘制(网格恒 8px;16×16 图块整体拖入占 4 格)</h2>
+        <div class="row" style="margin-bottom:8px">
+          <button id="mapImportTil">导入 tileset .til</button>
+          <input type="file" id="mapTilFile" accept=".til" style="display:none">
+          <label>宽(tiles)<input type="number" id="mapW" value="32" min="8" max="128" style="width:56px"></label>
+          <label>高<input type="number" id="mapH" value="22" min="8" max="128" style="width:56px"></label>
+          <label>图层
+            <select id="mapLayer"><option value="0">BG0</option><option value="1">BG1</option></select></label>
+          <label><input type="checkbox" id="mapBig"> 16×16 图块笔刷</label>
+          <label><input type="checkbox" id="mapFH"> H 翻转笔刷</label>
+          <label><input type="checkbox" id="mapFV"> V 翻转笔刷</label>
+          <label><input type="checkbox" id="mapShowCol"> 显示碰撞</label>
+          <label><input type="checkbox" id="mapColMode"> 碰撞编辑模式</label>
+          <button id="mapExport" class="primary">导出 .map</button>
+          <button id="mapExportCol">导出碰撞 .bin</button>
+        </div>
+        <div class="row" style="align-items:flex-start">
+          <div class="scrollX" style="max-height:520px"><canvas id="mapCanvas" class="pixel"></canvas></div>
+          <div class="scrollX"><canvas id="mapTileset" class="pixel"></canvas></div>
+        </div>
+      </section>
+
+      <!-- 自由 -->
+      <section id="paneFree" style="display:none">
+        <h2>自由绘制(模式2 位图;1bit 透明通道;抖动笔刷;PNG 导入量化)</h2>
+        <div class="row" style="margin-bottom:8px">
+          <label>宽<input type="number" id="freeW" value="64" min="1" max="512" style="width:60px"></label>
+          <label>高<input type="number" id="freeH" value="64" min="1" max="512" style="width:60px"></label>
+          <button id="freeCover">32×32 封面模板</button>
+          <button id="freeImport">导入 PNG</button>
+          <input type="file" id="freePng" accept=".png" style="display:none">
+          <label>量化
+            <select id="pngMethod"><option value="fs">误差扩散(FS)</option><option value="bayer">Bayer 4×4</option></select></label>
+          <label>α 阈值 <input type="number" id="alphaTh" value="128" min="0" max="255" style="width:56px"></label>
+          <button id="freeExport" class="primary">导出 .bm2(位图)</button>
+          <button id="freeExportCover">导出 cover.bin</button>
+        </div>
+        <div class="scrollX"><canvas id="freeCanvas" class="pixel"></canvas></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section>
+        <h2>ANSI 256 调色板(无调色板层,T12)</h2>
+        <div id="palette"></div>
+        <div class="row" style="margin-top:8px">
+          <span id="curColor" style="width:22px;height:22px;border:1px solid #444;display:inline-block"></span>
+          <span id="colorLbl"></span>
+          <span class="muted">左键画 / 右键=透明(擦)</span>
+        </div>
+        <div class="row"><span class="muted">抖动第二色:</span><span id="d2Lbl">#0</span></div>
+      </section>
+      <section>
+        <h2>说明</h2>
+        <div class="muted" style="font-size:12px">
+          · 透明 = 独立 1bit"不画"标志,棋盘格显示(§6.6)<br>
+          · 16×16 精灵导出为 4 连续 tile(TL,TR,BL,BR)<br>
+          · 地图 16×16 图块笔刷一次占 2×2 格<br>
+          · 碰撞通道每 tile 1bit,导出 data 段<br>
+          · 草稿每 15s 自动保存(浏览器)<br>
+          · 产物直接对接打包环境 gfx/ 目录
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+<script src="../js/core/ansi.js"></script>
+<script src="../js/core/comp.js"></script>
+<script>const AC2 = window.AC2 = window.AC2 || {};</script>
+<script src="../js/tools/imgedit.js"></script>
+</body>
+</html>

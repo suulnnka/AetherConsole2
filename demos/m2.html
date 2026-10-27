@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · M2 demo — 模式2 旋转/纹理映射/矢量/模式切换</title>
+<style>
+  body { background: #16161c; color: #c8c8d0; font: 13px/1.5 monospace; display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 0; padding: 12px; }
+  canvas { image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  #hud { font: 12px monospace; color: #8f8fa0; }
+  b { color: #fff; }
+  button { font: 12px monospace; background: #26262e; color: #cfcfda; border: 1px solid #444; padding: 4px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="scr"></canvas>
+<div><button id="btnSwitch">切换 模式1/模式2(验证切换清 VRAM)</button> <button id="btnCube">纹理立方体</button> <button id="btnStar">旋转矢量星</button></div>
+<div id="hud"></div>
+<script src="../js/core/ansi.js"></script>
+<script src="../js/core/comp.js"></script>
+<script src="../js/core/mulaw.js"></script>
+<script src="../js/core/font.js"></script>
+<script src="../js/core/biosfont.js"></script>
+<script src="../js/core/cart.js"></script>
+<script src="../js/host/input.js"></script>
+<script src="../js/host/mode1.js"></script>
+<script src="../js/host/mode2.js"></script>
+<script src="../js/host/ajs.js"></script>
+<script src="../js/host/machine.js"></script>
+<script src="../js/shell/shell.js"></script>
+<script>
+'use strict';
+function bm2(w, h, fill) {
+  const n = w * h, stride = (w + 7) >> 3;
+  const buf = new Uint8Array(8 + n + stride * h);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, 0x20324D42, true); dv.setUint16(4, w, true); dv.setUint16(6, h, true);
+  for (let i = 0; i < n; i++) { const c = fill(i % w, (i / w) | 0); if (c == null) { buf[8 + 8 + (i / w | 0) * stride + ((i % w) >> 3)] |= 1 << (i % w & 7); } else buf[8 + i] = c; }
+  return buf;
+}
+const M = new AC2.Machine({});
+M.setMode(2);
+const R = M.R;
+
+// 16×16 纹理:渐变 + 图案(8×8 放大最近邻效果 + 缩小区域平均效果共用)
+R.loadBitmap('tex', { data: bm2(32, 32, (x, y) => {
+  const dx = x - 16, dy = y - 16, d = Math.sqrt(dx * dx + dy * dy);
+  if (d > 15) return null;
+  const hue = (Math.atan2(dy, dx) / 6.2832 + 1) % 1;
+  const lv = Math.max(0, 1 - d / 16) * 4 + hue * 4;
+  const cube = (v) => { const i = Math.max(0, Math.min(5, v | 0)); return 16 + 36 * i; };
+  // 简易伪彩:角度→色相环
+  const ang = hue * 6, seg = ang | 0, f = ang - seg;
+  const r = seg === 0 ? 5 : seg === 1 ? 5 - f * 5 : seg === 2 ? 0 : seg === 3 ? 0 : seg === 4 ? f * 5 : 5;
+  const g = seg === 0 ? f * 5 : seg === 1 ? 5 : seg === 2 ? 5 : seg === 3 ? 5 - f * 5 : 0;
+  const b = seg === 3 ? 0 : seg === 4 ? 0 : seg < 2 ? 0 : (seg === 2 ? f * 5 : 5);
+  const shade = 0.55 + 0.45 * (1 - d / 16);
+  return AC2.ANSI.fromRgbFast(r * 51 * shade, g * 51 * shade, b * 51 * shade);
+}) });
+
+// 矢量星(路径 → 光栅化缓存)
+const star = (r0, r1, n, rot) => {
+  const d = [];
+  for (let i = 0; i < n * 2; i++) {
+    const a = rot + Math.PI * i / n;
+    const r = (i & 1) ? r1 : r0;
+    d.push([i === 0 ? 'm' : 'l', 24 + Math.cos(a) * r, 24 + Math.sin(a) * r]);
+  }
+  return d;
+};
+R.loadVector('star', { data: new TextEncoder().encode(JSON.stringify({
+  w: 48, h: 48,
+  paths: [
+    { d: star(20, 9, 5, -Math.PI / 2), close: true, fill: 220, stroke: 226, width: 1 }
+  ]
+})) });
+
+let scene = 'cube';
+let f = 0;
+const machine = M;
+
+function drawCube() {
+  // 仿 PS1:仿射纹理映射三角形拼合旋转立方体(模式2 固件原生)
+  const F = machine.frame();
+  const s = 44;
+  const cx = 88, cy = 92;
+  const a = F * 0.013, b = F * 0.021;
+  const vtx = [], T = 16;
+  for (let i = 0; i < 8; i++) {
+    let x = (i & 1 ? 1 : -1), y = (i & 2 ? 1 : -1), z = (i & 4 ? 1 : -1);
+    let x1 = Math.cos(a) * x - Math.sin(a) * z, z1 = Math.sin(a) * x + Math.cos(a) * z;
+    let y1 = Math.cos(b) * y - Math.sin(b) * z1, z2 = Math.sin(b) * y + Math.cos(b) * z1;
+    const persp = 2.6 / (2.6 + z2);
+    vtx.push([cx + x1 * s * persp, cy + y1 * s * persp, z2]);
+  }
+  const faces = [[0,1,3,2],[4,5,7,6],[0,1,5,4],[2,3,7,6],[0,2,6,4],[1,3,7,5]];
+  const uvq = [[0,0],[T,0],[T,T],[0,T]];
+  for (const fc of faces) {
+    // 背面剔除(叉积)
+    const p0 = vtx[fc[0]], p1 = vtx[fc[1]], p2 = vtx[fc[2]];
+    const cr = (p1[0]-p0[0])*(p2[1]-p0[1]) - (p1[1]-p0[1])*(p2[0]-p0[0]);
+    if (cr <= 0) continue;
+    const zAvg = (p0[2] + p1[2] + vtx[fc[3]][2]) / 4;
+    R.poly([p0, p1, vtx[fc[2]], vtx[fc[3]]], { color: zAvg < 0 ? 236 : 242 }); // 底色描影
+    for (let k = 1; k + 1 < 4; k++) {
+      R.triTex(p0, vtx[fc[k]], vtx[fc[k+1]], uvq[0], uvq[k], uvq[k+1], 'tex');
+    }
+  }
+  R.text(6, 6, 'MODE2 CUBE', { color: 15 });
+}
+
+function drawStar() {
+  const F = machine.frame();
+  R.push();
+  R.translate(120 + 60 * Math.sin(F * 0.01), 88);
+  R.rotate(F & 255);
+  R.blit('star', -24, -24);
+  R.pop();
+  // 旋转缩放的纹理环
+  for (let i = 0; i < 5; i++) {
+    const t = F * 0.02 + i * 51;
+    R.blit('tex', 120 + Math.cos(t) * 80 - 16, 130 + Math.sin(t) * 24 - 16, { rot: (F * 3 + i * 40) & 255, sx: 1, sy: 1 });
+  }
+  R.text(6, 6, 'MODE2 VECTOR+ROT', { color: 15 });
+}
+
+M.setMode(2);
+const shell = new AC2.Shell(document.getElementById('scr'), { machine: M });
+shell.onBeforeStep = () => {
+  const F = machine.frame;
+  f++;
+  if (machine.mode === 2) {
+    R.clear(16);
+    if (scene === 'cube') drawCube();
+    else drawStar();
+    // 自适应采样对照:同一纹理 1× / 3×(最近邻) / 0.4×(区域平均)
+    R.blit('tex', 150, 6, {});
+    R.blit('tex', 190, 6, { sx: 3, sy: 3 });
+    R.blit('tex', 150, 46, { sx: 0.4, sy: 0.4 });
+    R.text(150, 90, '1x  nearest', { color: 8 });
+    R.text(150, 100, '3x  nearest', { color: 8 });
+    R.text(150, 110, '.4x  box', { color: 8 });
+  } else {
+    // 模式1 简单画面证明切换
+    const S = machine.S;
+    S.backdrop(18);
+    const tiles = new Uint8Array(2 * 72);
+    for (let i = 0; i < 64; i++) tiles[72 + i] = 196;
+    S.loadTiles('bg', { data: tiles }, 0, 2);
+    const L = new Uint16Array(32 * 32).fill(S.entry(1));
+    S.setMap(0, 0, 0, 32, 32, L);
+    S.scroll(0, machine.frame * 2, 0);
+    S.setSprite(0, { x: 100 + (f % 40), y: 60, tile: 1, big: 1 });
+  }
+};
+shell.start();
+
+document.getElementById('btnSwitch').onclick = () => { machine.setMode(machine.mode === 2 ? 1 : 2); };
+document.getElementById('btnCube').onclick = () => { machine.setMode(2); scene = 'cube'; };
+document.getElementById('btnStar').onclick = () => { machine.setMode(2); scene = 'star'; };
+
+const hud = document.getElementById('hud');
+setInterval(() => {
+  hud.innerHTML = 'mode <b>' + machine.mode + '</b> · fps <b>' + shell.fps + '</b> · logic <b>' + machine.stats.logicMs.toFixed(2) + 'ms</b> · frame <b>' + machine.frameCount + '</b>';
+}, 250);
+</script>
+</body>
+</html>

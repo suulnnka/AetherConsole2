@@ -1,0 +1,288 @@
+/* carts/breakout/main.ajs — BREAKOUT(AC1 移植 · 模式1)
+ * 砖墙/挡板/球/粒子全走 OAM;边框/星野走 BG;HUD 走 bios.text。
+ * 速度动力学/连击/命中停顿照搬 AC1;果冻晃动以命中停顿+震屏近似。
+ */
+var D = JSON.parse(new TextDecoder().decode(cart.seg('data', 0).data));
+var P = D.P, PAD_L = D.PAD_L, PAD_R = D.PAD_R, BRICK = D.BRICK, BALL = D.BALL, DOT1 = D.DOT1, DOT2 = D.DOT2;
+
+var W = 240, H = 176, TOP = 14, BEZEL = 24, FX0 = BEZEL, FX1 = W - BEZEL;
+var BR = { cols: 8, rows: 5, w: 16, h: 8, gx: 2, gy: 2 };
+var PADDLE = { w: 32, h: 4, y: H - 12, speed: 3 };
+var BALLS = 3;
+var SPEED_LAUNCH = 1.5, SPEED_MIN = 1.2, SPEED_ACCEL = 0.006;
+var SPEED_WALL_HIT = 0.12, SPEED_BRICK_HIT = 0.22, SPEED_PAD_HIT = 0.15;
+var HUES = [P.RED, P.ORANGE, P.YELLOW, P.GREEN, P.CYAN, P.PINK, P.MAGENTA, P.VIOLET, P.LIME, P.PCYAN, P.CREAM];
+
+var scene, score, lives, level, bricks, brickCount, timer, paused;
+var pd, ball, combo, comboTimer, introT, introMode, goT;
+var particles = [], chunks = [], popups = [], trail = [];
+var padSquash = 0, hitStop = 0, shakeT = 0, t = 0, best = 0;
+
+function maxSpeed() { return Math.min(3.4, 1.8 + 0.25 * (level - 1)); }
+function applySp() {
+  var m = Math.hypot(ball.vx, ball.vy) || 1;
+  ball.vx = ball.vx / m * ball.sp;
+  ball.vy = ball.vy / m * ball.sp;
+}
+function absorb(a) { ball.sp = Math.max(SPEED_MIN, ball.sp - a); applySp(); }
+function resetBricks() {
+  bricks = [];
+  var bx0 = FX0 + ((FX1 - FX0) - (BR.cols * (BR.w + BR.gx) - BR.gx)) / 2;
+  for (var r = 0; r < BR.rows; r++) for (var c = 0; c < BR.cols; c++)
+    bricks.push({ x: bx0 + c * (BR.w + BR.gx), y: TOP + 6 + r * (BR.h + BR.gy),
+                  row: r, col: c, alive: true, hp: r < 2 ? 2 : 1, maxHp: r < 2 ? 2 : 1 });
+  brickCount = bricks.length;
+}
+function stickBall() { ball = { x: 0, y: 0, vx: 0, vy: 0, sp: SPEED_LAUNCH, stuck: true }; trail = []; }
+function launch() {
+  var a = Math.PI / 2 + (rng() * 0.6 - 0.3);
+  ball.sp = SPEED_LAUNCH;
+  ball.vx = Math.cos(a) * ball.sp;
+  ball.vy = -Math.sin(a) * ball.sp;
+  ball.stuck = false;
+  combo = 0; comboTimer = 0;
+  sparkFan(ball.x + 1, ball.y, 5);
+}
+function burstD(x, y, dirX, dirY, n, baseCi) {
+  for (var i = 0; i < n; i++) {
+    var a = Math.atan2(dirY, dirX) + (rng() * 3.2 - 1.6), sp = rng(0.3) + 0.4 + rng() * 2;
+    particles.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                     ci: rng() < 0.4 ? baseCi : HUES[(rng() * 11) | 0], life: 14 + (rng() * 20 | 0) });
+  }
+}
+function sparkFan(x, y, n) {
+  for (var i = 0; i < n; i++) {
+    var a = rng() * 6.2832, sp = rng() * 0.9 + 0.2;
+    particles.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                     ci: HUES[(rng() * 11) | 0], life: 10 + (rng() * 10 | 0) });
+  }
+}
+function popup(x, y, text, ci) { popups.push({ x: x, y: y, text: text, ci: ci, life: 36 }); }
+function killBrick(b) {
+  b.alive = false; brickCount--;
+  var pts = (BR.rows - b.row) * 10;
+  score += pts;
+  combo++; comboTimer = 55;
+  for (var i = 0; i < 4; i++)
+    chunks.push({ x: b.x + 4 + (i & 1) * 8, y: b.y + 2 + (i >> 1) * 4, vx: (i & 1 ? 1 : -1) * (0.5 + rng()), vy: (i >> 1 ? 1 : -1) * (0.3 + rng() * 0.7) - 0.5, life: 24 });
+  burstD(b.x + 8, b.y + 4, ball.vx > 0 ? 1 : -1, ball.vy > 0 ? 1 : -1, 10, P.CYAN);
+  popup(b.x - 4, b.y - 6, '+' + pts, P.CYAN);
+  shakeT = 8; hitStop = 3;
+  A.playSfx(4);
+  if (brickCount === 0) {
+    score += 100;
+    scene = 'clear'; timer = 120;
+    burstD(W / 2, 56, 0, -1, 20, P.YELLOW);
+    shakeT = 12;
+  }
+}
+function crackBrick(b) {
+  score += 5;
+  combo++; comboTimer = 55;
+  burstD(b.x + 8, b.y + 4, ball.vx > 0 ? 1 : -1, ball.vy > 0 ? 1 : -1, 4, P.CYAN);
+  hitStop = 1;
+  A.playSfx(1);
+}
+function updateFx() {
+  for (var i = particles.length - 1; i >= 0; i--) {
+    var p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.vx *= 0.97; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  for (var j = chunks.length - 1; j >= 0; j--) {
+    var c = chunks[j];
+    c.x += c.vx; c.y += c.vy; c.vy += 0.08; c.life--;
+    if (c.life <= 0) chunks.splice(j, 1);
+  }
+  for (var k = popups.length - 1; k >= 0; k--) { popups[k].y -= 0.4; if (--popups[k].life <= 0) popups.splice(k, 1); }
+  if (padSquash > 0) padSquash--;
+  if (comboTimer > 0) comboTimer--;
+  if (goT > 0) goT--;
+  if (shakeT > 0) shakeT--;
+  if (particles.length > 40) particles.splice(0, particles.length - 40);
+  if (scene !== 'play' && trail.length) trail.pop();
+}
+function doUpdate() {
+  t++;
+  if (hitStop > 0) { hitStop--; return; }
+  updateFx();
+  if (scene === 'title') {
+    if (pad.a.pressed || pad.start.pressed) { scene = 'serve'; introT = 0; introMode = true; }
+    return;
+  }
+  if (scene === 'over') {
+    if (pad.a.pressed || pad.start.pressed) reset();
+    return;
+  }
+  if (pad.start.pressed) paused = !paused;
+  if (paused) return;
+  if (pad.left.down) pd.x -= PADDLE.speed;
+  if (pad.right.down) pd.x += PADDLE.speed;
+  pd.x = Math.max(FX0, Math.min(FX1 - PADDLE.w, pd.x));
+  if (scene === 'serve') {
+    introT++;
+    ball.x = pd.x + PADDLE.w / 2 - 1.5;
+    ball.y = PADDLE.y - 4;
+    if ((!introMode || introT >= 30) && pad.a.pressed) { launch(); scene = 'play'; }
+    return;
+  }
+  if (scene === 'clear') {
+    if (--timer <= 0) { level++; resetBricks(); stickBall(); scene = 'serve'; introT = 0; introMode = true; }
+    return;
+  }
+  // play
+  ball.sp = Math.min(maxSpeed(), ball.sp + SPEED_ACCEL);
+  applySp();
+  ball.x += ball.vx; ball.y += ball.vy;
+  trail.unshift({ x: ball.x, y: ball.y });
+  if (trail.length > 5) trail.pop();
+  if (ball.x <= FX0) { ball.x = FX0; ball.vx = Math.abs(ball.vx); absorb(SPEED_WALL_HIT); A.playSfx(1); }
+  if (ball.x + 3 >= FX1) { ball.x = FX1 - 3; ball.vx = -Math.abs(ball.vx); absorb(SPEED_WALL_HIT); A.playSfx(1); }
+  if (ball.y <= TOP) { ball.y = TOP; ball.vy = Math.abs(ball.vy); absorb(SPEED_WALL_HIT); A.playSfx(1); }
+  if (ball.vy > 0 && ball.y + 3 >= PADDLE.y && ball.y + 3 <= PADDLE.y + PADDLE.h + 3 &&
+      ball.x + 3 >= pd.x && ball.x <= pd.x + PADDLE.w) {
+    var tt = Math.max(-1, Math.min(1, (ball.x + 1.5 - (pd.x + PADDLE.w / 2)) / (PADDLE.w / 2)));
+    var ang = tt * Math.PI / 3;
+    var sp = Math.min(maxSpeed(), Math.max(SPEED_MIN, Math.hypot(ball.vx, ball.vy) + SPEED_PAD_HIT));
+    ball.vx = Math.sin(ang) * sp;
+    ball.vy = -Math.cos(ang) * sp;
+    ball.sp = sp;
+    ball.y = PADDLE.y - 3;
+    combo = 0; comboTimer = 0;
+    padSquash = 8; hitStop = 2;
+    sparkFan(ball.x + 1, PADDLE.y - 2, 8);
+    A.playSfx(1);
+  }
+  for (var bi = 0; bi < bricks.length; bi++) {
+    var b = bricks[bi];
+    if (!b.alive) continue;
+    var ox = Math.min(ball.x + 3, b.x + BR.w) - Math.max(ball.x, b.x);
+    var oy = Math.min(ball.y + 3, b.y + BR.h) - Math.max(ball.y, b.y);
+    if (ox > 0 && oy > 0) {
+      if (ox < oy) { ball.vx = -ball.vx; ball.x += ball.vx > 0 ? ox : -ox; }
+      else { ball.vy = -ball.vy; ball.y += ball.vy > 0 ? oy : -oy; }
+      b.hp--;
+      absorb(b.hp <= 0 ? SPEED_BRICK_HIT : SPEED_BRICK_HIT * 0.7);
+      if (Math.abs(ball.vy) < 0.2 * ball.sp) { ball.vy = (ball.vy >= 0 ? 1 : -1) * 0.3 * ball.sp; applySp(); }
+      if (b.hp <= 0) killBrick(b); else crackBrick(b);
+      break;
+    }
+  }
+  if (ball.y > H) {
+    burstD(ball.x, H - 4, 0, -1, 14, P.RED);
+    shakeT = 10; hitStop = 4;
+    lives--;
+    if (lives <= 0) { scene = 'over'; if (score > best) { best = score; writeSave(); } }
+    else { stickBall(); scene = 'serve'; introT = 0; introMode = false; }
+  }
+}
+function writeSave() {
+  try { save(new Uint8Array([score & 255, score >> 8, best & 255, best >> 8])); } catch (e) { }
+}
+function readSave() {
+  var d = load();
+  if (d && d.length >= 4) best = d[2] | (d[3] << 8);
+}
+function reset() {
+  score = 0; lives = 3; level = 1;
+  pd = { x: (W - PADDLE.w) / 2 };
+  resetBricks(); stickBall();
+  particles = []; chunks = []; popups = []; trail = [];
+  padSquash = 0; hitStop = 0; combo = 0; comboTimer = 0; goT = 0;
+  scene = 'title'; paused = false; introT = 0; introMode = false;
+}
+/* —— 绘制 —— */
+function brickTileIdx(b) {
+  var armored = b.maxHp > 1;
+  if (armored) return b.hp < b.maxHp ? 3 : 2;
+  return b.hp < b.maxHp ? 1 : 0;
+}
+function draw() {
+  var i = 0;
+  // 砖(16×8 于 16×16 tile 上半)
+  for (var bi = 0; bi < bricks.length && i < 120; bi++) {
+    var b = bricks[bi];
+    if (!b.alive) continue;
+    if (introMode && scene === 'serve' && introT < b.row * 5 + b.col * 1.5) continue;
+    S.setSprite(i++, { x: b.x | 0, y: b.y | 0, tile: BRICK[brickTileIdx(b)], prio: 2 });
+  }
+  // 挡板(两半)
+  if (scene === 'serve' || scene === 'play' || scene === 'clear') {
+    S.setSprite(i++, { x: (pd.x | 0), y: PADDLE.y - 5, tile: PAD_L, prio: 3 });
+    S.setSprite(i++, { x: (pd.x | 0) + 16, y: PADDLE.y - 5, tile: PAD_R, prio: 3 });
+  }
+  // 球 + 拖尾
+  if (scene === 'serve' || scene === 'play') {
+    for (var ti = trail.length - 1; ti >= 1 && i < 126; ti -= 2)
+      S.setSprite(i++, { x: trail[ti].x | 0, y: trail[ti].y | 0, tile: DOT1, prio: 1 });
+    S.setSprite(i++, { x: ball.x | 0, y: ball.y | 0, tile: BALL, prio: 3 });
+  }
+  // 碎块(2×2 点)
+  for (var ci = 0; ci < chunks.length && i < 127; ci++)
+    S.setSprite(i++, { x: chunks[ci].x | 0, y: chunks[ci].y | 0, tile: DOT2, prio: 3 });
+  // 粒子
+  for (var pi = 0; pi < particles.length && i < 128; pi++)
+    if (particles[pi].life > 4)
+      S.setSprite(i++, { x: particles[pi].x | 0, y: particles[pi].y | 0, tile: DOT1, prio: 3 });
+  // 震屏
+  S.scroll(0, 0, 0);
+  if (shakeT > 0) S.scroll(0, ((t & 1) * 2 - 1), ((t & 1) * 2 - 1));
+  // HUD / 场景文字
+  bios.text(26, 1, 'SCORE ' + score, { color: P.WHITE });
+  bios.text(104, 1, 'LV' + level, { color: P.WHITE });
+  var lv = '';
+  for (var li = 0; li < Math.max(0, lives); li++) lv += 'o ';
+  bios.text(186, 1, lv, { color: P.WHITE });
+  for (var pj = 0; pj < popups.length; pj++)
+    bios.text(popups[pj].x | 0, popups[pj].y | 0, popups[pj].text, { color: popups[pj].ci });
+  if (scene === 'title') {
+    bios.text(72, 34, 'BREAKOUT', { color: P.WHITE, scale: 2 });
+    if ((t % 60) < 36) bios.text(66, 70, 'PRESS START', { color: P.WHITE });
+    bios.text(48, 96, 'ARROWS MOVE - Z LAUNCH', { color: P.SLATE });
+    bios.text(60, 110, '240X176 60FPS AC2', { color: P.SLATE });
+  } else if (scene === 'serve') {
+    if (introMode && introT < 20) { if ((t % 10) < 7) bios.text(96, 76, 'READY', { color: P.WHITE, scale: 2 }); }
+    else if ((t % 60) < 36) bios.text(84, 100, 'Z:LAUNCH', { color: P.WHITE });
+  } else if (scene === 'clear') {
+    bios.text(66, 72, 'LEVEL CLEAR!', { color: P.WHITE, scale: 2 });
+    bios.text(102, 94, '+100', { color: P.WHITE });
+  } else if (scene === 'over') {
+    bios.text(72, 60, 'GAME OVER', { color: P.WHITE, scale: 2 });
+    bios.text(66, 86, 'SCORE ' + score, { color: P.WHITE });
+    bios.text(60, 100, 'BEST ' + best, { color: P.PCYAN });
+    if ((t % 60) < 36) bios.text(66, 118, 'PRESS START', { color: P.LGRAY });
+  }
+  if (scene === 'play' && comboTimer > 0 && combo >= 2 && (comboTimer >= 15 || (t & 3) < 2))
+    bios.text(90, 90, combo + ' HITS!', { color: P.WHITE });
+  if (paused) bios.text(102, 84, 'PAUSE', { color: P.WHITE, scale: 2 });
+}
+function buildBg() {
+  S.mapSize(0, 30, 22);
+  var e = new Uint16Array(30 * 22);
+  // 边框柱(0-2 / 27-29 列)+ 顶墙(第 1 行场内)
+  for (var y = 0; y < 22; y++) for (var x = 0; x < 30; x++) {
+    var ti = 0;
+    if (x < 3 || x >= 27) ti = (x === 2 || x === 27) ? 2 : 1;
+    else if (y === 1) ti = 3;
+    e[y * 30 + x] = ti === 0 ? 0 : S.entry(ti);
+  }
+  // 星点(稀疏)
+  var seed = 9;
+  for (var i = 0; i < 26; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    var sx = 3 + seed % 24, sy = 2 + ((seed >> 8) % 20);
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    e[sy * 30 + sx] = S.entry(4 + (seed % 4));
+  }
+  S.setMap(0, 0, 0, 30, 22, e);
+}
+function init() {
+  S.loadTiles('bg', cart.seg('tilesbg', 0).data, 0);
+  S.loadTiles('obj', cart.seg('tilesobj', 0).data, 0);
+  S.backdrop(P.BG);
+  buildBg();
+  readSave();
+  reset();
+}
+var _stepRef = doUpdate;
+update = function () { _stepRef(); draw(); };

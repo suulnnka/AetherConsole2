@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AetherConsole 2</title>
+<style>
+  html, body { height: 100%; }
+  body { background: #101014; color: #c8c8d0; font: 13px/1.6 monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; margin: 0; }
+  canvas { image-rendering: pixelated; background: #000; outline: 1px solid #333; cursor: none; }
+  #bar { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #8f8fa0; }
+  #bar button { font: 12px monospace; background: #26262e; color: #cfcfda; border: 1px solid #444; padding: 4px 10px; cursor: pointer; }
+  #bar a { color: #7aa2f7; }
+  #hud { font: 12px monospace; color: #6f6f80; }
+  b { color: #fff; }
+</style>
+</head>
+<body>
+<canvas id="scr"></canvas>
+<div id="bar">
+  <button id="btnImport">导入卡带 .aec</button>
+  <button id="btnEject">弹出当前卡带</button>
+  <span>|</span>
+  <a href="tools/index.html">工具链</a>
+  <a href="demos/m1.html">M1</a> <a href="demos/m2.html">M2</a> <a href="demos/m4.html">M4</a>
+</div>
+<div id="hud"></div>
+<input type="file" id="file" accept=".aec" style="display:none" multiple>
+<script src="js/core/ansi.js"></script>
+<script src="js/core/comp.js"></script>
+<script src="js/core/mulaw.js"></script>
+<script src="js/core/font.js"></script>
+<script src="js/core/biosfont.js"></script>
+<script src="js/core/cart.js"></script>
+<script src="js/host/input.js"></script>
+<script src="js/host/mode1.js"></script>
+<script src="js/host/mode2.js"></script>
+<script src="js/host/ajs.js"></script>
+<script src="js/host/audio.js"></script>
+<script src="js/host/bios.js"></script>
+<script src="js/host/machine.js"></script>
+<script src="js/shell/shell.js"></script>
+<script>
+'use strict';
+const M = new AC2.Machine({});
+const shell = new AC2.Shell(document.getElementById('scr'), { machine: M });
+shell.start();
+
+// —— 卡带导入(文件选择 + 拖拽) ——
+const fileEl = document.getElementById('file');
+document.getElementById('btnImport').onclick = () => fileEl.click();
+fileEl.onchange = async () => {
+  for (const f of fileEl.files) {
+    try {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      const r = await AC2.Lib.add(buf);
+      console.log('imported', r.cart.id, r.cart.title);
+    } catch (e) { console.error('导入失败:', e.message); }
+  }
+  fileEl.value = '';
+  if (M.state === 'menu') M.bios.reloadList();
+};
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  for (const f of e.dataTransfer.files) {
+    if (!f.name.endsWith('.aec')) continue;
+    try {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      await AC2.Lib.add(buf);
+    } catch (err) { console.error(err.message); }
+  }
+  if (M.state === 'menu' && M.bios) M.bios.reloadList();
+});
+document.getElementById('btnEject').onclick = () => { if (M.state === 'game' || M.state === 'pause') M.exitToMenu(); };
+
+const hud = document.getElementById('hud');
+setInterval(() => {
+  const st = M.state + (M.paused ? '(paused)' : '') + (M.halted ? '(HALT)' : '');
+  hud.innerHTML = 'state <b>' + st + '</b> · mode <b>' + M.mode + '</b> · fps <b>' + shell.fps + '</b> · frame <b>' + M.frameCount + '</b>' +
+    (M.cart ? ' · cart <b>' + M.cart.id + ' ' + (M.cart.title || '') + '</b>' : '') +
+    ' · logic <b>' + M.stats.logicMs.toFixed(2) + '</b> / draw <b>' + M.stats.drawMs.toFixed(2) + '</b> / audio <b>' + M.stats.audioMs.toFixed(2) + 'ms</b>';
+}, 250);
+</script>
+</body>
+</html>

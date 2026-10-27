@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AC2 · 魔塔编辑器</title>
+<link rel="stylesheet" href="editor.css">
+<style>
+  .floorList { flex: 1; overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .floorItem { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px;
+    cursor: pointer; border: 1px solid transparent; }
+  .floorItem:hover { background: var(--panel2); }
+  .floorItem.sel { background: var(--panel2); border-color: var(--accent); }
+  .floorItem canvas { background: #0b0b0e; border: 1px solid var(--line); border-radius: 2px; }
+  .floorItem .no { color: var(--accent); font-weight: 600; min-width: 2.4em; }
+  .floorItem .name { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; max-width: 90px; }
+  .pal { flex: 1; overflow: auto; padding: 6px; }
+  .palGroup { margin-bottom: 8px; }
+  .palGrid { display: flex; flex-wrap: wrap; gap: 4px; }
+  .palItem { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 3px 3px;
+    border: 1px solid var(--line); border-radius: 5px; cursor: pointer; background: var(--panel2);
+    width: 58px; }
+  .palItem:hover { border-color: var(--accent2); }
+  .palItem.sel { border-color: var(--accent); background: #262417; outline: 1px solid var(--accent); }
+  .palItem canvas { background: #0b0b0e; border-radius: 2px; }
+  .palItem .t { font-size: 11px; color: var(--fg); line-height: 1.25; text-align: center; }
+  .palItem .s { font-size: 10px; color: var(--faint); line-height: 1.2; }
+  #editWrap { background: #0b0b0e; padding: 8px; border-radius: 4px;
+    box-shadow: 0 0 0 1px var(--line), 0 6px 24px rgba(0,0,0,.5); }
+  .valList { flex: 1; overflow: auto; padding: 6px 10px; font-size: 12px; }
+  .valList .e { color: var(--danger); margin: 3px 0; }
+  .valList .w { color: var(--accent2); margin: 3px 0; }
+  .valList .ok { color: var(--ok); margin: 3px 0; }
+  .monTable { border-collapse: collapse; width: 100%; }
+  .monTable th, .monTable td { padding: 2px 4px; text-align: center; border-bottom: 1px solid var(--line); }
+  .monTable th { color: var(--dim); font-weight: normal; font-size: 11px; }
+  .monTable td.nm { text-align: left; color: var(--fg); }
+  .monTable input[type=number] { width: 58px; padding: 1px 4px; }
+  .monTable td:first-child canvas { vertical-align: middle; margin-right: 5px; }
+  .ptCanvas { image-rendering: pixelated; cursor: default; }
+</style>
+</head>
+<body>
+<header class="toolbar">
+  <span class="title">魔塔编辑器</span>
+  <a class="btn" href="index.html">← 工具首页</a>
+  <input id="projName" type="text" style="width:120px;" title="塔名(仅编辑器内显示)" placeholder="塔名">
+  <span class="sep"></span>
+  <button id="btnUndo" class="btn icon" title="撤销 Ctrl+Z">↶</button>
+  <button id="btnRedo" class="btn icon" title="重做 Ctrl+Y">↷</button>
+  <span class="sep"></span>
+  <button id="btnMon" class="btn">怪物数值</button>
+  <button id="btnCheck" class="btn primary">校验地图</button>
+  <span class="grow"></span>
+  <div class="menu" id="ioMenu">
+    <button class="btn" id="ioBtn">导入 / 导出 ▾</button>
+  </div>
+  <button id="btnPlay" class="btn primary" title="现场重打包 .aec,用真实 AC2 内核试玩当前地图">▶ 试玩</button>
+  <button id="btnNew" class="btn danger">新建塔</button>
+</header>
+
+<div class="main">
+  <aside class="side" style="width: 176px;">
+    <div class="panel-title">楼层<span class="grow"></span><span id="floorCount" class="kv"></span></div>
+    <div style="padding:6px 8px;display:flex;gap:4px;flex-wrap:wrap;">
+      <button id="fAdd" class="btn" title="在末尾加一层(全墙)">+ 加层</button>
+      <button id="fDup" class="btn" title="复制当前层">复制</button>
+      <button id="fDel" class="btn danger" title="删除当前层">删</button>
+      <button id="fUp" class="btn icon" title="上移">▲</button>
+      <button id="fDown" class="btn icon" title="下移">▼</button>
+    </div>
+    <div class="floorList" id="floorList"></div>
+    <div style="border-top:1px solid var(--line);padding:6px 8px;">
+      <div class="kv">层名(仅编辑器备注)</div>
+      <input id="floorName" type="text" style="width:100%;">
+    </div>
+  </aside>
+
+  <section class="center">
+    <div class="toolrow">
+      <button id="tWall" class="btn" title="本层内部全部填墙">全墙</button>
+      <button id="tFloor" class="btn" title="本层内部全部填地板">全地板</button>
+      <button id="tBorder" class="btn" title="四周围一圈墙">描边</button>
+      <button id="tRoom" class="btn" title="在当前层挖一个标准房间(墙+地板+门洞)">挖房间</button>
+      <span class="sep"></span>
+      <span class="label kv">左键绘制 · 右键吸管 · 拖动连刷</span>
+      <span class="grow"></span>
+      <span class="label kv">当前笔刷</span>
+      <canvas id="brushIcon" width="16" height="16" style="width:32px;height:32px;"></canvas>
+      <span id="brushName" class="kv" style="min-width:7em;"></span>
+    </div>
+    <div class="work centered"><div id="editWrap"><canvas id="edit" class="edit" width="396" height="396"></canvas></div></div>
+    <div class="toolrow" style="border-bottom:none;">
+      <span id="stHint" class="kv">11×11 网格 · 与游戏完全一致的画面(模式1 tile/OAM)</span>
+      <span class="grow"></span>
+      <span id="stPos" class="kv"></span>
+      <span id="stStats" class="kv"></span>
+    </div>
+  </section>
+
+  <aside class="side right" style="width: 216px;">
+    <div class="panel-title">图块<span class="grow"></span><span id="curFloorLabel" class="kv"></span></div>
+    <div class="pal" id="pal"></div>
+  </aside>
+</div>
+
+<footer class="statusbar">
+  <span id="st1">自动存草稿于浏览器</span>
+  <span id="st2"></span>
+  <span id="st3"></span>
+</footer>
+
+<script src="../js/core/ansi.js"></script>
+<script src="editor-common.js?v=2"></script>
+<script src="../js/core/comp.js"></script>
+<script src="../js/core/mulaw.js"></script>
+<script src="../js/core/font.js"></script>
+<script src="../js/core/biosfont.js"></script>
+<script src="../js/core/cart.js"></script>
+<script src="../js/core/packer.js"></script>
+<script src="../js/host/input.js"></script>
+<script src="../js/host/mode1.js"></script>
+<script src="../js/host/mode2.js"></script>
+<script src="../js/host/ajs.js"></script>
+<script src="../js/host/audio.js"></script>
+<script src="../js/host/bios.js"></script>
+<script src="../js/host/machine.js"></script>
+<script src="../js/tools/mtedit.js?v=2"></script>
+</body>
+</html>
